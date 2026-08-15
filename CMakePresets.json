@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "default",
+      "displayName": "Default (macOS / Linux, system compiler)",
+      "inherits": "base"
+    },
+    {
+      "name": "windows-mingw",
+      "displayName": "Windows (MinGW-w64 GCC + vcpkg static)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-static",
+        "VCPKG_HOST_TRIPLET": "x64-mingw-static"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (macOS / Linux)",
+      "inherits": "default",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-mingw-debug",
+      "displayName": "Debug (Windows MinGW)",
+      "inherits": "windows-mingw",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default",             "configurePreset": "default" },
+    { "name": "windows-mingw",       "configurePreset": "windows-mingw" },
+    { "name": "debug",               "configurePreset": "debug" },
+    { "name": "windows-mingw-debug", "configurePreset": "windows-mingw-debug" }
+  ]
+}

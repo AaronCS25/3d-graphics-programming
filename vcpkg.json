@@ -1,0 +1,9 @@
+{
+  "name": "3d-graphics-programming",
+  "version-string": "0.1.0",
+  "description": "Weekly tasks for the 3D Graphics Programming course at UTEC",
+  "dependencies": [
+    "glfw3",
+    "glad"
+  ]
+}

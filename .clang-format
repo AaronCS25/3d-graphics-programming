@@ -1,0 +1,7 @@
+# Consistent formatting for the whole repo. Run: clang-format -i src/*.cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Attach
+PointerAlignment: Left

@@ -1,0 +1,16 @@
+# Build output
+build/
+cmake-build-*/
+vcpkg_installed/
+
+# IDEs / editors
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Compiled binaries (in case someone builds in-tree)
+*.exe
+*.o
+*.obj
