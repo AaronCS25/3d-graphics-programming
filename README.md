@@ -7,7 +7,7 @@ shared build system.
 | Task | Topic | Status |
 |------|-------|--------|
 | [01](task-01-hello-triangle/) | Hello Triangle — first window, shaders, VBO/VAO | ✅ |
-| [02](task-02-sierpinski-triangle/) | Sierpinski triangle — chaos game + recursive subdivision | 🚧 |
+| [02](task-02-sierpinski-triangle/) | Sierpinski triangle — chaos game + recursive subdivision | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
@@ -66,6 +66,7 @@ cmake --build --preset windows-mingw --target task02
 └── task-NN-short-name/
     ├── README.md           # statement · result · approach · controls · notes
     ├── CMakeLists.txt      # 2 lines: add_executable + link gfx_common
+    ├── docs/               # screenshots referenced by the README
     └── src/main.cpp
 ```
 
@@ -80,7 +81,7 @@ library for a future task (e.g. `glm`, `stb`, `assimp`) means adding it to
 cp -r _template task-03-short-name
 # rename target `taskNN` -> `task03` in task-03-short-name/CMakeLists.txt
 # add `add_subdirectory(task-03-short-name)` to the root CMakeLists.txt
-# fill in README.md, write src/main.cpp, add a screenshot when done
+# fill in README.md, write src/main.cpp, add a screenshot to docs/ when done
 ```
 
 ## Conventions
