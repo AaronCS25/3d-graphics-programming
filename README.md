@@ -6,7 +6,7 @@ shared build system.
 
 | Task | Topic | Status |
 |------|-------|--------|
-| [01](task-01-hello-triangle/) | Hello Triangle — first window, shaders, VBO/VAO | 🚧 |
+| [01](task-01-hello-triangle/) | Hello Triangle — first window, shaders, VBO/VAO | ✅ |
 | [02](task-02-sierpinski-triangle/) | Sierpinski triangle — chaos game + recursive subdivision | 🚧 |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
