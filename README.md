@@ -45,8 +45,13 @@ The first configure lets vcpkg download and build the dependencies (a couple of
 minutes); afterwards it is instant. Every task is a separate executable:
 
 ```sh
+# macOS / Linux
 cmake --build --preset default --target task02      # build one task only
 ./build/default/task-02-sierpinski-triangle/task02  # run it
+
+# Windows (MinGW-w64 GCC)
+cmake --build --preset windows-mingw --target task02
+./build/windows-mingw/task-02-sierpinski-triangle/task02.exe
 ```
 
 ## Repository layout
