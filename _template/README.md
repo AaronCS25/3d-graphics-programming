@@ -6,7 +6,7 @@
 
 ## Result
 
-![screenshot](screenshot.png)
+![screenshot](docs/screenshot.png)
 
 ## Approach
 
