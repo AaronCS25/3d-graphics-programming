@@ -5,3 +5,16 @@ ColumnLimit: 100
 AllowShortFunctionsOnASingleLine: Empty
 BreakBeforeBraces: Attach
 PointerAlignment: Left
+
+# glad must be included before GLFW: glad.h aborts with #error if a GL header
+# was pulled in first. Pin the order so sorting on save cannot break the build.
+IncludeBlocks: Preserve
+IncludeCategories:
+  - Regex: '^<glad/'
+    Priority: 1
+  - Regex: '^<GLFW/'
+    Priority: 2
+  - Regex: '^<'
+    Priority: 3
+  - Regex: '.*'
+    Priority: 4
