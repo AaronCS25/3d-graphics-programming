@@ -8,6 +8,7 @@ shared build system.
 |------|-------|--------|
 | [01](task-01-hello-triangle/) | Hello Triangle — first window, shaders, VBO/VAO | ✅ |
 | [02](task-02-sierpinski-triangle/) | Sierpinski triangle — chaos game + recursive subdivision | ✅ |
+| [03](task-03-sphere/) | Sphere — CHE (L1) half-edge mesh, parametric sphere, EBO rendering | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
@@ -19,6 +20,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
 | Graphics API | OpenGL 3.3 core profile |
 | Windowing / input | [GLFW](https://www.glfw.org/) |
 | Function loader | [glad](https://glad.dav1d.de/) |
+| Math | [glm](https://github.com/g-truc/glm) |
 | Build | [CMake](https://cmake.org/) ≥ 3.21 + [Ninja](https://ninja-build.org/) |
 | Dependencies | [vcpkg](https://vcpkg.io) (manifest mode, `vcpkg.json`) |
 | Compilers | GCC (MinGW-w64) on Windows · AppleClang on macOS · GCC/Clang on Linux |
@@ -65,9 +67,9 @@ cmake --build --preset windows-mingw --target task02
 ├── _template/              # copy me to start a new task
 └── task-NN-short-name/
     ├── README.md           # statement · result · approach · controls · notes
-    ├── CMakeLists.txt      # 2 lines: add_executable + link gfx_common
+    ├── CMakeLists.txt      # add_executable + link gfx_common
     ├── docs/               # screenshots referenced by the README
-    └── src/main.cpp
+    └── src/                # main.cpp, plus any task-specific headers/sources
 ```
 
 Every task links against the `gfx_common` interface target defined in the root

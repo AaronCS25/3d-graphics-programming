@@ -4,6 +4,7 @@
   "description": "Weekly tasks for the 3D Graphics Programming course at UTEC",
   "dependencies": [
     "glfw3",
-    "glad"
+    "glad",
+    "glm"
   ]
 }
