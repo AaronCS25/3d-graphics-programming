@@ -26,5 +26,6 @@ target_link_options(gfx_common INTERFACE
 add_subdirectory(task-01-hello-triangle)
 add_subdirectory(task-02-sierpinski-triangle)
 add_subdirectory(task-03-sphere)
+add_subdirectory(task-05-transformations)
 add_subdirectory(task-06-fast-marching)
 
