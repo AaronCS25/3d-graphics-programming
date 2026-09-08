@@ -9,7 +9,7 @@ shared build system.
 | [01](task-01-hello-triangle/) | Hello Triangle — first window, shaders, VBO/VAO | ✅ |
 | [02](task-02-sierpinski-triangle/) | Sierpinski triangle — chaos game + recursive subdivision | ✅ |
 | [03](task-03-sphere/) | Sphere — CHE (L1) half-edge mesh, parametric sphere, EBO rendering | ✅ |
-| [06](task-06-fast-marching/) | Fast Marching — geodesic distance map on the CHE, PLY input, colormap | 🚧 |
+| [06](task-06-fast-marching/) | Fast Marching — geodesic distance map on the CHE, PLY input, colormap | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 

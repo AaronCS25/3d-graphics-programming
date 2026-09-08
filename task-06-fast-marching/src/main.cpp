@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -40,39 +41,149 @@ namespace {
 constexpr int kWindowWidth = 1000;
 constexpr int kWindowHeight = 750;
 
+// aDistance is the geodesic distance of the vertex normalised to [0, 1] by the
+// largest finite distance, or a negative value where the front never arrived.
+// It is interpolated across each triangle like any other attribute, so the
+// fragment shader sees a smooth distance field, not per-vertex steps.
 const char* kVertexShaderSource = R"(#version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
+layout (location = 2) in float aDistance;
 
 uniform mat4 uModel;
 uniform mat4 uViewProjection;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
+out float vDistance;
 
 void main() {
     vec4 world = uModel * vec4(aPos, 1.0);
     vWorldPos = world.xyz;
     vNormal = mat3(uModel) * aNormal;
+    vDistance = aDistance;
     gl_Position = uViewProjection * world;
 }
 )";
 
+// The colormap functions are copied verbatim from kbinani/colormap-shaders
+// (MIT, Copyright (c) 2015 kbinani): shaders/glsl/MATLAB_jet.frag and
+// shaders/glsl/IDL_Plasma.frag, with the function names prefixed so both can
+// live in one shader. Each maps x in [0, 1] to an RGB colour.
 const char* kFragmentShaderSource = R"(#version 330 core
 in vec3 vWorldPos;
 in vec3 vNormal;
+in float vDistance;
 
 uniform vec3 uCameraPos;
+uniform int uColormap;   // 0 = jet, 1 = plasma
+uniform bool uIsolines;  // darken bands so the front's shape is visible
 
 out vec4 FragColor;
+
+// --- MATLAB_jet (kbinani/colormap-shaders) ---------------------------------
+float jet_red(float x) {
+    if (x < 0.7) {
+        return 4.0 * x - 1.5;
+    } else {
+        return -4.0 * x + 4.5;
+    }
+}
+
+float jet_green(float x) {
+    if (x < 0.5) {
+        return 4.0 * x - 0.5;
+    } else {
+        return -4.0 * x + 3.5;
+    }
+}
+
+float jet_blue(float x) {
+    if (x < 0.3) {
+       return 4.0 * x + 0.5;
+    } else {
+       return -4.0 * x + 2.5;
+    }
+}
+
+vec4 jet(float x) {
+    float r = clamp(jet_red(x), 0.0, 1.0);
+    float g = clamp(jet_green(x), 0.0, 1.0);
+    float b = clamp(jet_blue(x), 0.0, 1.0);
+    return vec4(r, g, b, 1.0);
+}
+
+// --- IDL_Plasma (kbinani/colormap-shaders) ---------------------------------
+float plasma_red(float x) {
+    const float pi = 3.141592653589793238462643383279502884197169399;
+    const float a = 12.16378802377247;
+    const float b = 0.05245257017955226;
+    const float c = 0.2532139106569052;
+    const float d = 0.02076964056039702;
+    const float e = 270.124167081014;
+    const float f = 1.724941960305955;
+    float v = (a * x + b) * sin(2.0 * pi / c * (x - d)) + e * x + f;
+    if (v > 255.0) {
+        return 255.0 - (v - 255.0);
+    } else {
+        return v;
+    }
+}
+
+float plasma_green(float x) {
+    const float pi = 3.141592653589793238462643383279502884197169399;
+    const float a = 88.08537391182792;
+    const float b = 0.25280516046667;
+    const float c = 0.05956080245692388;
+    const float d = 106.5684078925541;
+    return a * sin(2.0 * pi / b * (x - c)) + d;
+}
+
+float plasma_blue(float x) {
+    const float pi = 3.141592653589793238462643383279502884197169399;
+    const float a = 63.89922420106684;
+    const float b = 0.4259605778503662;
+    const float c = 0.2529247343450655;
+    const float d = 0.5150868195804643;
+    const float e = 938.1798072557968;
+    const float f = 503.0883490697431;
+    float v = (a * x + b) * sin(2.0 * pi / c * x + d * 2.0 * pi) - e * x + f;
+    if (v > 255.0) {
+        return 255.0 - (v - 255.0);
+    } else {
+        return mod(v, 255.0);
+    }
+}
+
+vec4 plasma(float x) {
+    float r = clamp(plasma_red(x) / 255.0, 0.0, 1.0);
+    float g = clamp(plasma_green(x) / 255.0, 0.0, 1.0);
+    float b = clamp(plasma_blue(x) / 255.0, 0.0, 1.0);
+    return vec4(r, g, b, 1.0);
+}
+// ---------------------------------------------------------------------------
 
 void main() {
     vec3 n = normalize(vNormal);
     vec3 toCamera = normalize(uCameraPos - vWorldPos);
     // abs() so back faces (open meshes like the bunny) are lit as well.
     float diffuse = abs(dot(n, toCamera));
-    vec3 base = vec3(0.82, 0.82, 0.85);
-    FragColor = vec4(base * (0.25 + 0.75 * diffuse), 1.0);
+    float shade = 0.35 + 0.65 * diffuse;
+
+    // Unreached vertices (disconnected pieces) carry a negative distance.
+    if (vDistance < 0.0) {
+        FragColor = vec4(vec3(0.45) * shade, 1.0);
+        return;
+    }
+
+    vec3 base = (uColormap == 0 ? jet(vDistance) : plasma(vDistance)).rgb;
+
+    // Isolines: 20 bands over [0, 1]; the first 15% of each band is darkened.
+    // Every band edge is a curve of equal geodesic distance — the front itself.
+    if (uIsolines && fract(vDistance * 20.0) < 0.15) {
+        base *= 0.35;
+    }
+    FragColor = vec4(base * shade, 1.0);
 }
 )";
 
@@ -84,6 +195,16 @@ struct Camera {
 
 GLenum gPolygonMode = GL_FILL;
 std::string gDroppedPath; // set by the drop callback, consumed by the render loop
+
+int gSource = 0;          // vertex the front starts from
+bool gSourceDirty = true; // distance map must be recomputed and re-uploaded
+int gColormap = 0;        // 0 = jet, 1 = plasma
+bool gIsolines = true;
+
+// Right click: the render loop, which knows the camera, resolves it to a vertex.
+bool gPickRequested = false;
+double gPickX = 0.0;
+double gPickY = 0.0;
 Camera gCamera;
 bool gDragging = false;
 double gLastCursorX = 0.0;
@@ -107,12 +228,27 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
     case GLFW_KEY_2:
         gPolygonMode = GL_LINE;
         break;
+    case GLFW_KEY_C:
+        gColormap = (gColormap + 1) % 2;
+        break;
+    case GLFW_KEY_I:
+        gIsolines = !gIsolines;
+        break;
+    case GLFW_KEY_R:
+        gSource = 0;
+        gSourceDirty = true;
+        break;
     default:
         break;
     }
 }
 
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
+        glfwGetCursorPos(window, &gPickX, &gPickY);
+        gPickRequested = true;
+        return;
+    }
     if (button != GLFW_MOUSE_BUTTON_LEFT) {
         return;
     }
@@ -199,6 +335,7 @@ GLuint createShaderProgram(const char* vertexSource, const char* fragmentSource)
 struct Attributes {
     glm::vec3 position;
     glm::vec3 normal;
+    float distance; // t / max_finite, or -1 where the front never arrived
 };
 
 // A CHE resident on the GPU. V goes to the element buffer untouched.
@@ -222,16 +359,24 @@ struct GpuMesh {
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Attributes),
                               reinterpret_cast<void*>(offsetof(Attributes, normal)));
         glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(Attributes),
+                              reinterpret_cast<void*>(offsetof(Attributes, distance)));
+        glEnableVertexAttribArray(2);
         glBindVertexArray(0);
     }
 
-    void upload(const CHE& mesh) {
+    // Uploads the geometry together with its distance map. Normalising by the
+    // largest finite distance puts every mesh on the same [0, 1] colour scale.
+    void upload(const CHE& mesh, const DistanceMap& map) {
         const std::vector<glm::vec3> normals = mesh.vertex_normals();
+        const float scale = map.max_finite > 0.0f ? 1.0f / map.max_finite : 1.0f;
 
         std::vector<Attributes> attributes;
         attributes.reserve(static_cast<size_t>(mesh.n_vertices()));
         for (int v = 0; v < mesh.n_vertices(); ++v) {
-            attributes.push_back({mesh.G(v), normals[static_cast<size_t>(v)]});
+            const float t = map.t[static_cast<size_t>(v)];
+            attributes.push_back(
+                {mesh.G(v), normals[static_cast<size_t>(v)], std::isinf(t) ? -1.0f : t * scale});
         }
 
         glBindVertexArray(vao);
@@ -274,6 +419,53 @@ void printStats(const std::string& name, const CHE& mesh) {
     std::printf("%s: V=%d E=%d F=%d euler=%d %s, %s\n", name.c_str(), mesh.n_vertices(),
                 mesh.n_edges(), mesh.n_triangles(), euler, mesh.is_closed() ? "closed" : "open",
                 problem.empty() ? "valid CHE" : problem.c_str());
+}
+
+// Vertex under the cursor. Every vertex is projected to the screen with the same
+// matrices the GPU uses; among those within a few pixels of the click the
+// nearest to the camera wins, so a vertex on the far side cannot be picked
+// through the surface. If nothing is that close, the closest on screen wins.
+// O(n) per click, which is nothing next to running the distance map.
+int pickVertex(const CHE& mesh, const glm::mat4& viewProjection, int width, int height,
+               double cursorX, double cursorY) {
+    constexpr float kRadiusPixels = 12.0f;
+    int best = 0;
+    float bestPixelDistance = std::numeric_limits<float>::max();
+    float bestDepth = std::numeric_limits<float>::max();
+
+    for (int v = 0; v < mesh.n_vertices(); ++v) {
+        const glm::vec4 clip = viewProjection * glm::vec4(mesh.G(v), 1.0f);
+        if (clip.w <= 0.0f) {
+            continue; // behind the camera
+        }
+        const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        const float px = (ndc.x * 0.5f + 0.5f) * static_cast<float>(width);
+        const float py = (1.0f - (ndc.y * 0.5f + 0.5f)) * static_cast<float>(height);
+        const float pixelDistance =
+            std::hypot(px - static_cast<float>(cursorX), py - static_cast<float>(cursorY));
+
+        const bool insideRadius = pixelDistance < kRadiusPixels;
+        const bool bestInsideRadius = bestPixelDistance < kRadiusPixels;
+        const bool better = insideRadius ? (!bestInsideRadius || ndc.z < bestDepth)
+                                         : (!bestInsideRadius && pixelDistance < bestPixelDistance);
+        if (better) {
+            best = v;
+            bestPixelDistance = pixelDistance;
+            bestDepth = ndc.z;
+        }
+    }
+    return best;
+}
+
+void updateTitle(GLFWwindow* window, const std::string& meshName, const CHE& mesh,
+                 const DistanceMap& map, double milliseconds) {
+    char title[256];
+    std::snprintf(title, sizeof(title),
+                  "Task 06 - Fast Marching | %s  V=%d F=%d | source v%d  t_max=%.3f  %.1f ms | %s%s",
+                  meshName.c_str(), mesh.n_vertices(), mesh.n_triangles(), gSource,
+                  static_cast<double>(map.max_finite), milliseconds,
+                  gColormap == 0 ? "jet" : "plasma", gIsolines ? " + isolines" : "");
+    glfwSetWindowTitle(window, title);
 }
 
 // Picks the source for --check. On the generated sphere it is the vertex closest
@@ -422,19 +614,28 @@ int main(int argc, char** argv) {
     const GLint modelLocation = glGetUniformLocation(program, "uModel");
     const GLint viewProjectionLocation = glGetUniformLocation(program, "uViewProjection");
     const GLint cameraLocation = glGetUniformLocation(program, "uCameraPos");
+    const GLint colormapLocation = glGetUniformLocation(program, "uColormap");
+    const GLint isolinesLocation = glGetUniformLocation(program, "uIsolines");
 
-    // 4. Geometry.
+    // 4. Geometry. The first upload happens in the loop, when the distance map
+    // is computed for the first time (gSourceDirty starts true).
     GpuMesh gpu;
     gpu.create();
-    gpu.upload(mesh);
+    std::string meshName = meshNames.front();
+    DistanceMap map;
+    double lastRunMilliseconds = 0.0;
 
     // 5. Render loop.
     while (!glfwWindowShouldClose(window)) {
+        // A dropped file replaces the mesh; the source goes back to vertex 0
+        // because the old index means nothing on the new mesh.
         if (!gDroppedPath.empty()) {
             try {
                 mesh = loadMesh(gDroppedPath);
                 printStats(gDroppedPath, mesh);
-                gpu.upload(mesh);
+                meshName = gDroppedPath;
+                gSource = 0;
+                gSourceDirty = true;
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "could not load '%s': %s\n", gDroppedPath.c_str(),
                              e.what());
@@ -454,6 +655,34 @@ int main(int argc, char** argv) {
         const glm::mat4 view = glm::lookAt(cameraPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
         const glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.05f, 100.0f);
         const glm::mat4 model(1.0f);
+        const glm::mat4 viewProjection = projection * view;
+
+        // A right click moves the source to the vertex under the cursor. The
+        // cursor is in window coordinates and the framebuffer may be larger
+        // (HiDPI), so the click is rescaled to framebuffer pixels first.
+        if (gPickRequested) {
+            gPickRequested = false;
+            int windowWidth = 0;
+            int windowHeight = 0;
+            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            const double sx = windowWidth > 0 ? static_cast<double>(width) / windowWidth : 1.0;
+            const double sy = windowHeight > 0 ? static_cast<double>(height) / windowHeight : 1.0;
+            gSource = pickVertex(mesh, viewProjection, width, height, gPickX * sx, gPickY * sy);
+            gSourceDirty = true;
+        }
+
+        // Recompute the distance map only when the source or the mesh changed:
+        // the result is static, so there is no reason to run it every frame.
+        if (gSourceDirty) {
+            gSourceDirty = false;
+            const auto start = std::chrono::steady_clock::now();
+            map = fast_marching(mesh, gSource);
+            lastRunMilliseconds =
+                1000.0 *
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            gpu.upload(mesh, map);
+        }
+        updateTitle(window, meshName, mesh, map, lastRunMilliseconds);
 
         glClearColor(0.07f, 0.08f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -461,9 +690,10 @@ int main(int argc, char** argv) {
 
         glUseProgram(program);
         glUniformMatrix4fv(modelLocation, 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(viewProjectionLocation, 1, GL_FALSE,
-                           glm::value_ptr(projection * view));
+        glUniformMatrix4fv(viewProjectionLocation, 1, GL_FALSE, glm::value_ptr(viewProjection));
         glUniform3fv(cameraLocation, 1, glm::value_ptr(cameraPos));
+        glUniform1i(colormapLocation, gColormap);
+        glUniform1i(isolinesLocation, gIsolines ? 1 : 0);
 
         glBindVertexArray(gpu.vao);
         glDrawElements(GL_TRIANGLES, gpu.indices, GL_UNSIGNED_INT, nullptr);

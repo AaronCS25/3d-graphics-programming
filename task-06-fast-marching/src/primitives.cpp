@@ -76,8 +76,9 @@ CHE make_torus(float major_radius, float minor_radius, int major_segments, int m
             const float theta =
                 2.0f * kPi * static_cast<float>(j) / static_cast<float>(minor_segments);
             const float ring = major_radius + minor_radius * std::cos(theta);
-            G.emplace_back(ring * std::cos(phi), ring * std::sin(phi),
-                           minor_radius * std::sin(theta));
+            // y is up in the viewer, so the ring lies in the xz plane.
+            G.emplace_back(ring * std::cos(phi), minor_radius * std::sin(theta),
+                           ring * std::sin(phi));
         }
     }
 
@@ -85,9 +86,9 @@ CHE make_torus(float major_radius, float minor_radius, int major_segments, int m
         return (i % major_segments) * minor_segments + (j % minor_segments);
     };
 
-    // Each quad of the grid becomes two triangles. Going first along phi and
-    // then along theta is counter-clockwise seen from outside (d/dphi x
-    // d/dtheta points outward), so the winding matches the sphere and cube.
+    // Each quad of the grid becomes two triangles. With the ring in the xz
+    // plane, d/dphi x d/dtheta points inward, so the corners are visited
+    // theta-first to keep the winding counter-clockwise seen from outside.
     std::vector<int> V;
     V.reserve(static_cast<size_t>(6 * major_segments * minor_segments));
     for (int i = 0; i < major_segments; ++i) {
@@ -96,8 +97,8 @@ CHE make_torus(float major_radius, float minor_radius, int major_segments, int m
             const int b = at(i + 1, j);
             const int c = at(i + 1, j + 1);
             const int d = at(i, j + 1);
-            V.insert(V.end(), {a, b, c});
-            V.insert(V.end(), {a, c, d});
+            V.insert(V.end(), {a, d, c});
+            V.insert(V.end(), {a, c, b});
         }
     }
 
