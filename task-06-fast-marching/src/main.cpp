@@ -16,6 +16,7 @@
 //         opening a window. While running, drop a .ply onto the window to load it.
 
 #include "che.hpp"
+#include "fast_marching.hpp"
 #include "mesh_io.hpp"
 #include "primitives.hpp"
 
@@ -26,6 +27,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -274,6 +276,62 @@ void printStats(const std::string& name, const CHE& mesh) {
                 problem.empty() ? "valid CHE" : problem.c_str());
 }
 
+// Picks the source for --check. On the generated sphere it is the vertex closest
+// to (r, 0, 0), on the equator: from the pole every geodesic runs along a
+// meridian, which is a chain of mesh edges, so edge-based Dijkstra would look
+// exact there and the test would prove nothing. From the equator the geodesics
+// cross the triangles diagonally, which is where the update step matters.
+int pickSource(const std::string& name, const CHE& mesh) {
+    if (name != "sphere") {
+        return 0;
+    }
+    const float radius = glm::length(mesh.G(0));
+    int best = 0;
+    for (int v = 1; v < mesh.n_vertices(); ++v) {
+        if (glm::distance(mesh.G(v), glm::vec3(radius, 0.0f, 0.0f)) <
+            glm::distance(mesh.G(best), glm::vec3(radius, 0.0f, 0.0f))) {
+            best = v;
+        }
+    }
+    return best;
+}
+
+// Runs the distance map and reports it. On the sphere the exact geodesic between
+// two points is the great-circle arc r * acos(p . q / r^2), a ground truth to
+// measure the error against.
+void checkDistances(const std::string& name, const CHE& mesh) {
+    const int source = pickSource(name, mesh);
+    const auto start = std::chrono::steady_clock::now();
+    const DistanceMap map = fast_marching(mesh, source);
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+
+    int unreached = 0;
+    for (const float t : map.t) {
+        unreached += std::isinf(t) ? 1 : 0;
+    }
+    std::printf("  fast marching from v%d: %.1f ms, t_max=%.4f, unreached=%d\n", source,
+                1000.0 * elapsed, static_cast<double>(map.max_finite), unreached);
+
+    if (name != "sphere") {
+        return;
+    }
+    const float radius = glm::length(mesh.G(0));
+    const glm::vec3 p = mesh.G(source);
+    double sum = 0.0;
+    double worst = 0.0;
+    for (int v = 0; v < mesh.n_vertices(); ++v) {
+        const float cosine = std::clamp(glm::dot(p, mesh.G(v)) / (radius * radius), -1.0f, 1.0f);
+        const float exact = radius * std::acos(cosine);
+        const double err = std::abs(static_cast<double>(map.t[static_cast<size_t>(v)] - exact));
+        sum += err;
+        worst = std::max(worst, err);
+    }
+    std::printf("  error vs exact arc: mean=%.5f max=%.5f (radius %.2f, antipode exact=%.5f)\n",
+                sum / mesh.n_vertices(), worst, static_cast<double>(radius),
+                static_cast<double>(radius) * 3.14159265358979323846);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -297,6 +355,7 @@ int main(int argc, char** argv) {
             try {
                 const CHE candidate = loadMesh(name);
                 printStats(name, candidate);
+                checkDistances(name, candidate);
                 failures += candidate.validate().empty() ? 0 : 1;
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "could not load '%s': %s\n", name.c_str(), e.what());
