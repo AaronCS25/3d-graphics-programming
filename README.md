@@ -9,6 +9,7 @@ shared build system.
 | [01](task-01-hello-triangle/) | Hello Triangle — first window, shaders, VBO/VAO | ✅ |
 | [02](task-02-sierpinski-triangle/) | Sierpinski triangle — chaos game + recursive subdivision | ✅ |
 | [03](task-03-sphere/) | Sphere — CHE (L1) half-edge mesh, parametric sphere, EBO rendering | ✅ |
+| [04](task-04-simplification-algorithm/) | Mesh simplification — QEM edge collapse inside the CHE, LOD + error | ✅ |
 | [05](task-05-transformations/) | Animated scene — spinning cube, orbiting sphere and moon, model matrices | ✅ |
 | [06](task-06-fast-marching/) | Fast Marching — geodesic distance map on the CHE, PLY input, colormap | ✅ |
 
