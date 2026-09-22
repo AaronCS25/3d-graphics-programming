@@ -25,9 +25,10 @@ viewpoint visible.
 
 ## Approach
 
-Everything stays in `src/main.cpp`, with the same generated geometry, lighting,
-model matrices and controls as task 05. This task remains a standalone executable;
-its addition to the root CMake file follows the other tasks.
+The scene stays in `src/main.cpp`, with the same generated geometry, lighting,
+model matrices and controls as task 05. Since task 08, camera operations live in
+[`common/camera.hpp`](../common/camera.hpp), shared by both tasks. This task uses
+its animated mode and remains a standalone executable.
 
 ### Camera position and view
 
@@ -45,7 +46,7 @@ builds the world-to-camera transformation: the camera changes position and
 orientation, while each object's model matrix still describes its own motion.
 The radius leaves room for the moon throughout the orbit at the default window size.
 
-`cameraTime` accumulates elapsed seconds, independently of the frame rate.
+The camera accumulates elapsed seconds internally, independently of the frame rate.
 It shares the scene's pause and speed controls, but `C` can freeze just the
 camera to make its contribution easy to compare. Resuming continues from the
 same position; `R` resets both clocks.

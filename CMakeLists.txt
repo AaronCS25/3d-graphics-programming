@@ -10,10 +10,12 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 
-# Common interface target: every task links against this to get GLFW + glad
-# (and later glm, stb, etc.) plus sensible warnings.
+include(CTest)
+add_subdirectory(common)
+
+# Every task gets GLFW, glad, GLM, the shared camera and warning flags here.
 add_library(gfx_common INTERFACE)
-target_link_libraries(gfx_common INTERFACE glfw glad::glad glm::glm)
+target_link_libraries(gfx_common INTERFACE glfw glad::glad gfx_camera)
 target_compile_options(gfx_common INTERFACE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>)
@@ -30,3 +32,4 @@ add_subdirectory(task-04-simplification-algorithm)
 add_subdirectory(task-05-transformations)
 add_subdirectory(task-06-fast-marching)
 add_subdirectory(task-07-projective-transformations)
+add_subdirectory(task-08-arcball-camera)

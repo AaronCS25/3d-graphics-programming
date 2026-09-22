@@ -13,6 +13,7 @@ shared build system.
 | [05](task-05-transformations/) | Animated scene — spinning cube, orbiting sphere and moon, model matrices | ✅ |
 | [06](task-06-fast-marching/) | Fast Marching — geodesic distance map on the CHE, PLY input, colormap | ✅ |
 | [07](task-07-projective-transformations/) | Camera — view/projection matrices and animated orbit | ✅ |
+| [08](task-08-arcball-camera/) | Quaternion arcball — shared camera, mouse orbit, scroll zoom, animated/manual modes | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
@@ -68,6 +69,7 @@ cmake --build --preset windows-mingw --target task02
 ├── CMakePresets.json       # default (mac/linux) · windows-mingw · debug variants
 ├── vcpkg.json              # all dependencies, declared once
 ├── docs/SETUP.md           # environment setup per OS
+├── common/                 # reusable camera (GLM only) and camera tests
 ├── _template/              # copy me to start a new task
 └── task-NN-short-name/
     ├── README.md           # statement · result · approach · controls · notes
@@ -77,8 +79,9 @@ cmake --build --preset windows-mingw --target task02
 ```
 
 Every task links against the `gfx_common` interface target defined in the root
-`CMakeLists.txt`, which carries GLFW, glad and the warning flags. Adding a
-library for a future task (e.g. `glm`, `stb`, `assimp`) means adding it to
+`CMakeLists.txt`, which carries GLFW, glad, GLM, the shared camera and warning flags.
+Any task can `#include <camera.hpp>`; see [common/README.md](common/README.md).
+Adding a library for a future task (e.g. `stb`, `assimp`) means adding it to
 `vcpkg.json` and to `gfx_common` — nothing else changes.
 
 ## Adding a new task

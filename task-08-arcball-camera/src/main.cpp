@@ -1,13 +1,12 @@
-// Task 07 — Camera and Projective Transformations
+// Task 08 — Quaternion Arcball Camera
 //
-// A cube spins in place, a sphere orbits the cube, and a small moon orbits the
-// sphere, as in task 05. A camera now orbits the scene and changes height while
-// looking at the origin. Its view matrix is rebuilt from the camera position;
-// the projection follows the framebuffer aspect ratio.
+// The scene from tasks 05/07, viewed through the shared camera. Drag to rotate
+// its frame with an arcball quaternion; scroll to change its distance. C switches
+// between manual control and the animated orbit. Camera math lives in common/.
 //
 // The shader applies projection * view * model: local -> world -> camera ->
 // clip coordinates. All objects share the camera matrices; each keeps its own
-// model matrix. C freezes only the camera, making the two motions easy to compare.
+// model matrix. Mouse callbacks only forward input to the camera.
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -29,7 +28,7 @@ namespace {
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 720;
 
-// Shared camera introduced in task 08; this task uses only its animated mode.
+// The same camera is available to every task through gfx_common.
 camera gCamera;
 
 // Cube: two rotations about its own centre, at rates that do not divide each
@@ -153,6 +152,41 @@ struct Uniforms {
 
 void framebufferSizeCallback(GLFWwindow* /*window*/, int width, int height) {
     glViewport(0, 0, width, height);
+}
+
+void mouseButtonCallback(GLFWwindow* window, int button, int action, int /*mods*/) {
+    if (button != GLFW_MOUSE_BUTTON_LEFT) {
+        return;
+    }
+    if (action == GLFW_PRESS) {
+        double x = 0.0, y = 0.0;
+        int width = 0, height = 0;
+        glfwGetCursorPos(window, &x, &y);
+        glfwGetWindowSize(window, &width, &height);
+        gCamera.begin_drag(x, y, width, height);
+        gTitleDirty = true;
+    } else if (action == GLFW_RELEASE) {
+        gCamera.end_drag();
+    }
+}
+
+void cursorPosCallback(GLFWwindow* /*window*/, double x, double y) {
+    gCamera.drag(x, y);
+}
+
+void scrollCallback(GLFWwindow* /*window*/, double /*xoffset*/, double yoffset) {
+    gCamera.zoom(yoffset);
+    gTitleDirty = true;
+}
+
+void windowSizeCallback(GLFWwindow* /*window*/, int /*width*/, int /*height*/) {
+    gCamera.end_drag(); // the old drag was mapped to different window dimensions
+}
+
+void focusCallback(GLFWwindow* /*window*/, int focused) {
+    if (!focused) {
+        gCamera.end_drag(); // do not keep dragging after switching applications
+    }
 }
 
 void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
@@ -419,8 +453,8 @@ void drawMesh(const GpuMesh& mesh, GLenum mode, const glm::mat4& model, const gl
 
 void updateTitle(GLFWwindow* window) {
     char title[128];
-    std::snprintf(title, sizeof(title), "Task 07 - Camera | %s | camera %s | speed %.2fx",
-                  gPaused ? "paused" : "running", gCamera.animated() ? "orbiting" : "fixed",
+    std::snprintf(title, sizeof(title), "Task 08 - Arcball | %s | camera %s [C] | speed %.2fx",
+                  gPaused ? "paused" : "running", gCamera.animated() ? "animated" : "mouse",
                   static_cast<double>(gSpeed));
     glfwSetWindowTitle(window, title);
 }
@@ -443,7 +477,7 @@ int main() {
 #endif
 
     GLFWwindow* window =
-        glfwCreateWindow(kWindowWidth, kWindowHeight, "Task 07 - Camera", nullptr, nullptr);
+        glfwCreateWindow(kWindowWidth, kWindowHeight, "Task 08 - Arcball", nullptr, nullptr);
     if (window == nullptr) {
         std::fprintf(stderr, "Failed to create GLFW window\n");
         glfwTerminate();
@@ -455,6 +489,11 @@ int main() {
     glfwSwapInterval(1); // vsync, so the animation runs at the display rate
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
     glfwSetKeyCallback(window, keyCallback);
+    glfwSetMouseButtonCallback(window, mouseButtonCallback);
+    glfwSetCursorPosCallback(window, cursorPosCallback);
+    glfwSetScrollCallback(window, scrollCallback);
+    glfwSetWindowSizeCallback(window, windowSizeCallback);
+    glfwSetWindowFocusCallback(window, focusCallback);
 
     if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress))) {
         std::fprintf(stderr, "Failed to initialize GLAD\n");
