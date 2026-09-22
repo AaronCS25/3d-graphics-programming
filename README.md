@@ -12,6 +12,7 @@ shared build system.
 | [04](task-04-simplification-algorithm/) | Mesh simplification — QEM edge collapse inside the CHE, LOD + error | ✅ |
 | [05](task-05-transformations/) | Animated scene — spinning cube, orbiting sphere and moon, model matrices | ✅ |
 | [06](task-06-fast-marching/) | Fast Marching — geodesic distance map on the CHE, PLY input, colormap | ✅ |
+| [07](task-07-projective-transformations/) | Camera — view/projection matrices and animated orbit | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
