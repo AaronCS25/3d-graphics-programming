@@ -14,6 +14,7 @@ shared build system.
 | [06](task-06-fast-marching/) | Fast Marching — geodesic distance map on the CHE, PLY input, colormap | ✅ |
 | [07](task-07-projective-transformations/) | Camera — view/projection matrices and animated orbit | ✅ |
 | [08](task-08-arcball-camera/) | Quaternion arcball — shared camera, mouse orbit, scroll zoom, animated/manual modes | ✅ |
+| [09](task-09-illumination/) | Illumination — Phong / Blinn-Phong with Gouraud / Phong shading, keyboard switching | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 

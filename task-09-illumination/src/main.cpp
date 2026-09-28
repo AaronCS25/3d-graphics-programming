@@ -28,6 +28,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -48,15 +49,74 @@ constexpr float kLightHeight = 1.2f;
 constexpr float kLightSpeed = 0.6f; // rad/s
 constexpr float kLightMarkerRadius = 0.05f;
 
+constexpr float kMinShininess = 2.0f;
+constexpr float kMaxShininess = 256.0f;
+constexpr float kShininessStep = 1.25f;
+
 camera gCamera(glm::vec3(0.0f), 4.0f, 1.5f, 0.5f);
 
+bool gBlinn = false;   // reflection model: Phong (R.V) or Blinn-Phong (N.H)
+bool gGouraud = false; // shading: per vertex (Gouraud) or per fragment (Phong)
+float gShininess = 32.0f;
 bool gPaused = false;
 bool gWireframe = false;
 bool gResetRequested = false;
 bool gTitleDirty = true;
 std::string gDroppedPath; // set by the drop callback, consumed by the render loop
 
-const char* kVertexShaderSource = R"(#version 330 core
+const char* kVersionSource = "#version 330 core\n";
+
+// The reflection model, shared word for word by both shading programs. Gouraud
+// evaluates it in the vertex shader, Phong shading in the fragment shader: the
+// equation is the same, only the stage, and so the number of evaluations, changes.
+//
+//   I = ka Ia + kd Id max(0, N.L) + ks Is max(0, R.V)^n        Phong
+//   I = ka Ia + kd Id max(0, N.L) + ks Is max(0, N.H)^(4n)     Blinn-Phong
+//
+// Positions and normals are in world space. The 4n keeps the Blinn-Phong
+// highlight about the size of the Phong one: the angle between N and H is
+// roughly half the angle between R and V.
+const char* kIlluminationSource = R"(
+uniform vec3 uLightPos;
+uniform vec3 uCameraPos;
+uniform vec3 uAmbientLight; // Ia
+uniform vec3 uLightColor;   // Id = Is
+uniform vec3 uKa;
+uniform vec3 uKd;
+uniform vec3 uKs;
+uniform float uShininess;
+uniform bool uBlinn;
+
+vec3 illuminate(vec3 position, vec3 normal) {
+    vec3 N = normalize(normal);
+    vec3 L = normalize(uLightPos - position);
+    vec3 V = normalize(uCameraPos - position);
+
+    vec3 ambient = uKa * uAmbientLight;
+
+    float lambert = max(dot(N, L), 0.0);
+    vec3 diffuse = uKd * uLightColor * lambert;
+
+    // A surface facing away from the light gets no highlight, even if R or H
+    // happens to lean towards the viewer.
+    float highlight = 0.0;
+    if (lambert > 0.0) {
+        if (uBlinn) {
+            vec3 H = normalize(L + V);
+            highlight = pow(max(dot(N, H), 0.0), 4.0 * uShininess);
+        } else {
+            vec3 R = 2.0 * dot(N, L) * N - L;
+            highlight = pow(max(dot(R, V), 0.0), uShininess);
+        }
+    }
+    vec3 specular = uKs * uLightColor * highlight;
+
+    return ambient + diffuse + specular;
+}
+)";
+
+// Gouraud shading: one colour per vertex, interpolated across the triangle.
+const char* kGouraudVertexSource = R"(
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 
@@ -65,28 +125,60 @@ uniform mat4 uView;
 uniform mat4 uProjection;
 uniform mat3 uNormalMatrix;
 
-out vec3 vNormal;
+out vec3 vColor;
 
 void main() {
-    vNormal = uNormalMatrix * aNormal;
-    gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
+    vec4 world = uModel * vec4(aPos, 1.0);
+    vColor = illuminate(world.xyz, uNormalMatrix * aNormal);
+    gl_Position = uProjection * uView * world;
 }
 )";
 
-// Normals mapped from [-1, 1] to [0, 1]: a quick check that they are smooth and
-// point outwards before any light depends on them.
-const char* kFragmentShaderSource = R"(#version 330 core
+const char* kGouraudFragmentSource = R"(
+in vec3 vColor;
+
+out vec4 FragColor;
+
+void main() {
+    FragColor = vec4(vColor, 1.0);
+}
+)";
+
+// Phong shading: the normal is interpolated instead, then renormalised inside
+// illuminate() and the model is evaluated for every fragment.
+const char* kPhongVertexSource = R"(
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProjection;
+uniform mat3 uNormalMatrix;
+
+out vec3 vWorldPos;
+out vec3 vNormal;
+
+void main() {
+    vec4 world = uModel * vec4(aPos, 1.0);
+    vWorldPos = world.xyz;
+    vNormal = uNormalMatrix * aNormal;
+    gl_Position = uProjection * uView * world;
+}
+)";
+
+const char* kPhongFragmentSource = R"(
+in vec3 vWorldPos;
 in vec3 vNormal;
 
 out vec4 FragColor;
 
 void main() {
-    FragColor = vec4(0.5 * normalize(vNormal) + 0.5, 1.0);
+    FragColor = vec4(illuminate(vWorldPos, vNormal), 1.0);
 }
 )";
 
 // The light marker is drawn in the light's colour, without shading.
-const char* kMarkerVertexShaderSource = R"(#version 330 core
+const char* kMarkerVertexSource = R"(
 layout (location = 0) in vec3 aPos;
 
 uniform mat4 uModel;
@@ -98,7 +190,7 @@ void main() {
 }
 )";
 
-const char* kMarkerFragmentShaderSource = R"(#version 330 core
+const char* kMarkerFragmentSource = R"(
 uniform vec3 uColor;
 
 out vec4 FragColor;
@@ -156,12 +248,37 @@ void dropCallback(GLFWwindow* /*window*/, int count, const char** paths) {
 }
 
 void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
+    // The shininess is continuous, so auto-repeat is welcome there.
+    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+        switch (key) {
+        case GLFW_KEY_UP:
+            gShininess = std::min(gShininess * kShininessStep, kMaxShininess);
+            gTitleDirty = true;
+            break;
+        case GLFW_KEY_DOWN:
+            gShininess = std::max(gShininess / kShininessStep, kMinShininess);
+            gTitleDirty = true;
+            break;
+        default:
+            break;
+        }
+    }
+
+    // Toggles fire once per press; holding a key must not flip them repeatedly.
     if (action != GLFW_PRESS) {
         return;
     }
     switch (key) {
     case GLFW_KEY_ESCAPE:
         glfwSetWindowShouldClose(window, true);
+        break;
+    case GLFW_KEY_B:
+        gBlinn = !gBlinn;
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_G:
+        gGouraud = !gGouraud;
+        gTitleDirty = true;
         break;
     case GLFW_KEY_SPACE:
         gPaused = !gPaused;
@@ -182,9 +299,12 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
     }
 }
 
-GLuint compileShader(GLenum type, const char* source) {
+// glShaderSource concatenates the pieces in order, so the #version line goes
+// first and a shared function can be spliced in before the stage that calls it.
+GLuint compileShader(GLenum type, std::vector<const char*> sources) {
+    sources.insert(sources.begin(), kVersionSource);
     const GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, nullptr);
+    glShaderSource(shader, static_cast<GLsizei>(sources.size()), sources.data(), nullptr);
     glCompileShader(shader);
 
     GLint success = 0;
@@ -200,12 +320,13 @@ GLuint compileShader(GLenum type, const char* source) {
     return shader;
 }
 
-GLuint createShaderProgram(const char* vertexSource, const char* fragmentSource) {
-    const GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
+GLuint createShaderProgram(const std::vector<const char*>& vertexSources,
+                           const std::vector<const char*>& fragmentSources) {
+    const GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexSources);
     if (vertexShader == 0) {
         return 0;
     }
-    const GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
+    const GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSources);
     if (fragmentShader == 0) {
         glDeleteShader(vertexShader);
         return 0;
@@ -230,6 +351,47 @@ GLuint createShaderProgram(const char* vertexSource, const char* fragmentSource)
     }
     return program;
 }
+
+// A shading program and its uniform locations. Gouraud and Phong shading declare
+// the same uniforms, so the render loop drives either one with the same code.
+struct LightingProgram {
+    GLuint id = 0;
+    GLint model = -1;
+    GLint view = -1;
+    GLint projection = -1;
+    GLint normalMatrix = -1;
+    GLint lightPos = -1;
+    GLint cameraPos = -1;
+    GLint ambientLight = -1;
+    GLint lightColor = -1;
+    GLint ka = -1;
+    GLint kd = -1;
+    GLint ks = -1;
+    GLint shininess = -1;
+    GLint blinn = -1;
+
+    bool create(const std::vector<const char*>& vertexSources,
+                const std::vector<const char*>& fragmentSources) {
+        id = createShaderProgram(vertexSources, fragmentSources);
+        if (id == 0) {
+            return false;
+        }
+        model = glGetUniformLocation(id, "uModel");
+        view = glGetUniformLocation(id, "uView");
+        projection = glGetUniformLocation(id, "uProjection");
+        normalMatrix = glGetUniformLocation(id, "uNormalMatrix");
+        lightPos = glGetUniformLocation(id, "uLightPos");
+        cameraPos = glGetUniformLocation(id, "uCameraPos");
+        ambientLight = glGetUniformLocation(id, "uAmbientLight");
+        lightColor = glGetUniformLocation(id, "uLightColor");
+        ka = glGetUniformLocation(id, "uKa");
+        kd = glGetUniformLocation(id, "uKd");
+        ks = glGetUniformLocation(id, "uKs");
+        shininess = glGetUniformLocation(id, "uShininess");
+        blinn = glGetUniformLocation(id, "uBlinn");
+        return true;
+    }
+};
 
 struct Attributes {
     glm::vec3 position;
@@ -319,9 +481,12 @@ void printStats(const std::string& name, const CHE& mesh) {
 void updateTitle(GLFWwindow* window, const std::string& meshName, const CHE& mesh) {
     char title[256];
     std::snprintf(title, sizeof(title),
-                  "Task 09 - Illumination | %s  V=%d F=%d | light %s | camera %s",
+                  "Task 09 - Illumination | %s  V=%d F=%d | %s [B] | %s shading [G] | n=%.0f | "
+                  "light %s | camera %s",
                   meshName.c_str(), mesh.n_vertices(), mesh.n_triangles(),
-                  gPaused ? "paused" : "orbiting", gCamera.animated() ? "animated" : "mouse");
+                  gBlinn ? "Blinn-Phong" : "Phong", gGouraud ? "Gouraud" : "Phong",
+                  static_cast<double>(gShininess), gPaused ? "paused" : "orbiting",
+                  gCamera.animated() ? "animated" : "mouse");
     glfwSetWindowTitle(window, title);
 }
 
@@ -409,21 +574,23 @@ int main(int argc, char** argv) {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
 
-    // 3. Shaders.
-    const GLuint program = createShaderProgram(kVertexShaderSource, kFragmentShaderSource);
+    // 3. Shaders. illuminate() is compiled into the stage that calls it: the
+    //    vertex stage for Gouraud, the fragment stage for Phong shading.
+    LightingProgram gouraud;
+    LightingProgram phong;
+    const bool lightingReady =
+        gouraud.create({kIlluminationSource, kGouraudVertexSource}, {kGouraudFragmentSource}) &&
+        phong.create({kPhongVertexSource}, {kIlluminationSource, kPhongFragmentSource});
     const GLuint markerProgram =
-        createShaderProgram(kMarkerVertexShaderSource, kMarkerFragmentShaderSource);
-    if (program == 0 || markerProgram == 0) {
-        glDeleteProgram(program);
+        createShaderProgram({kMarkerVertexSource}, {kMarkerFragmentSource});
+    if (!lightingReady || markerProgram == 0) {
+        glDeleteProgram(gouraud.id);
+        glDeleteProgram(phong.id);
         glDeleteProgram(markerProgram);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
-    const GLint modelLocation = glGetUniformLocation(program, "uModel");
-    const GLint viewLocation = glGetUniformLocation(program, "uView");
-    const GLint projectionLocation = glGetUniformLocation(program, "uProjection");
-    const GLint normalMatrixLocation = glGetUniformLocation(program, "uNormalMatrix");
     const GLint markerModelLocation = glGetUniformLocation(markerProgram, "uModel");
     const GLint markerViewLocation = glGetUniformLocation(markerProgram, "uView");
     const GLint markerProjectionLocation = glGetUniformLocation(markerProgram, "uProjection");
@@ -439,7 +606,13 @@ int main(int argc, char** argv) {
     marker.create();
     marker.upload(make_sphere(kLightMarkerRadius, 16, 8));
 
-    const glm::vec3 lightColor(1.0f);
+    // The coefficients of the equation. ka = kd, so the ambient term keeps the
+    // surface colour; ks is grey, so the highlight takes the colour of the light.
+    const glm::vec3 ambientLight(0.15f); // Ia
+    const glm::vec3 lightColor(1.0f);    // Id = Is
+    const glm::vec3 ka(0.85f, 0.42f, 0.30f);
+    const glm::vec3 kd(0.85f, 0.42f, 0.30f);
+    const glm::vec3 ks(0.60f);
 
     // 5. Render loop.
     float lightAngle = 0.0f;
@@ -499,11 +672,22 @@ int main(int argc, char** argv) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glPolygonMode(GL_FRONT_AND_BACK, gWireframe ? GL_LINE : GL_FILL);
 
-        glUseProgram(program);
-        glUniformMatrix4fv(modelLocation, 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(viewLocation, 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(projectionLocation, 1, GL_FALSE, glm::value_ptr(projection));
-        glUniformMatrix3fv(normalMatrixLocation, 1, GL_FALSE, glm::value_ptr(normalMatrix));
+        const glm::vec3 cameraPos = gCamera.position();
+        const LightingProgram& lighting = gGouraud ? gouraud : phong;
+        glUseProgram(lighting.id);
+        glUniformMatrix4fv(lighting.model, 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(lighting.view, 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(lighting.projection, 1, GL_FALSE, glm::value_ptr(projection));
+        glUniformMatrix3fv(lighting.normalMatrix, 1, GL_FALSE, glm::value_ptr(normalMatrix));
+        glUniform3fv(lighting.lightPos, 1, glm::value_ptr(lightPos));
+        glUniform3fv(lighting.cameraPos, 1, glm::value_ptr(cameraPos));
+        glUniform3fv(lighting.ambientLight, 1, glm::value_ptr(ambientLight));
+        glUniform3fv(lighting.lightColor, 1, glm::value_ptr(lightColor));
+        glUniform3fv(lighting.ka, 1, glm::value_ptr(ka));
+        glUniform3fv(lighting.kd, 1, glm::value_ptr(kd));
+        glUniform3fv(lighting.ks, 1, glm::value_ptr(ks));
+        glUniform1f(lighting.shininess, gShininess);
+        glUniform1i(lighting.blinn, gBlinn ? 1 : 0);
         gpu.draw();
 
         const glm::mat4 markerModel = glm::translate(glm::mat4(1.0f), lightPos);
@@ -522,7 +706,8 @@ int main(int argc, char** argv) {
     // 6. Cleanup.
     gpu.destroy();
     marker.destroy();
-    glDeleteProgram(program);
+    glDeleteProgram(gouraud.id);
+    glDeleteProgram(phong.id);
     glDeleteProgram(markerProgram);
     glfwDestroyWindow(window);
     glfwTerminate();
