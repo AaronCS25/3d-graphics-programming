@@ -2,9 +2,9 @@
 //
 // The animated scene of tasks 05/07/08 (a spinning cube, a sphere orbiting it
 // and a moon orbiting the sphere) standing above a floor, lit by the animated
-// sun of task 10 with its shadow map. Every surface takes its colour from an
-// image: a different material on each face of the cube, the world map on the
-// sphere, the moon on the moon and paving stones on the floor.
+// sun of task 10 with its shadow map. Every surface takes its colour and its
+// shininess from images: a different material on each face of the cube, the
+// world map on the sphere, the moon on the moon and paving stones on the floor.
 //
 //   1. glfwInit() + window hints (OpenGL 3.3 core) + glfwCreateWindow()
 //   2. glfwMakeContextCurrent() + gladLoadGLLoader() + depth test
@@ -86,6 +86,7 @@ enum Filter { kNearest, kBilinear, kTrilinear };
 const char* kFilterNames[] = {"nearest", "bilinear", "trilinear"};
 
 bool gUseAlbedoMap = true;
+bool gUseSpecularMap = true;
 Filter gFilter = kTrilinear;
 bool gFilterDirty = false;
 bool gShadows = true;
@@ -185,7 +186,8 @@ uniform sampler2D uShadowMap;
 uniform bool uShadows;
 uniform sampler2D uAlbedoMap;
 uniform bool uUseAlbedoMap;
-uniform float uSpecular;
+uniform sampler2D uSpecularMap;
+uniform bool uUseSpecularMap;
 
 out vec4 FragColor;
 
@@ -216,9 +218,13 @@ void main() {
     // what the lighting contributes.
     vec3 albedo = uUseAlbedoMap ? texture(uAlbedoMap, vUV).rgb : vec3(0.75);
 
+    // The specular map is ks per texel: one channel, white where the surface
+    // is shiny. Without it every surface gets the same highlight.
+    float ks = uUseSpecularMap ? texture(uSpecularMap, vUV).r : 0.3;
+
     vec3 N = normalize(vNormal);
     float shadow = uShadows ? shadowFactor(vLightSpacePos, N, uLightDir) : 0.0;
-    FragColor = vec4(illuminate(vWorldPos, N, albedo, uSpecular, shadow), 1.0);
+    FragColor = vec4(illuminate(vWorldPos, N, albedo, ks, shadow), 1.0);
 }
 )";
 
@@ -308,6 +314,10 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
         break;
     case GLFW_KEY_1:
         gUseAlbedoMap = !gUseAlbedoMap;
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_2:
+        gUseSpecularMap = !gUseSpecularMap;
         gTitleDirty = true;
         break;
     case GLFW_KEY_F:
@@ -595,11 +605,28 @@ GLuint loadTexture(const std::string& name) {
     return texture;
 }
 
-// What a surface looks like: its colour, from an image, and the strength of its
-// highlight.
+// A 1x1 texture of a single colour, for a material that has no image for some
+// map: sampled anywhere it answers the same value, so the shader needs no
+// special case.
+GLuint makeFlatTexture(const glm::vec3& value) {
+    const unsigned char texel[3] = {static_cast<unsigned char>(255.0f * value.r),
+                                    static_cast<unsigned char>(255.0f * value.g),
+                                    static_cast<unsigned char>(255.0f * value.b)};
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, texel);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    applyFilter(texture, gFilter);
+    return texture;
+}
+
+// What a surface looks like, one image per term of the lighting equation: its
+// colour (kd = ka) and how shiny it is (ks).
 struct Material {
     GLuint albedo;
-    float specular;
+    GLuint specular;
 };
 
 // One draw of the frame: a mesh (or a range of it), where, and with which
@@ -664,7 +691,8 @@ struct SceneProgram {
     GLint shininess = -1;
     GLint albedoMap = -1;
     GLint useAlbedoMap = -1;
-    GLint specular = -1;
+    GLint specularMap = -1;
+    GLint useSpecularMap = -1;
 
     bool create() {
         id = createShaderProgram({kSceneVertexSource}, {kIlluminationSource, kSceneFragmentSource});
@@ -685,18 +713,20 @@ struct SceneProgram {
         shininess = glGetUniformLocation(id, "uShininess");
         albedoMap = glGetUniformLocation(id, "uAlbedoMap");
         useAlbedoMap = glGetUniformLocation(id, "uUseAlbedoMap");
-        specular = glGetUniformLocation(id, "uSpecular");
+        specularMap = glGetUniformLocation(id, "uSpecularMap");
+        useSpecularMap = glGetUniformLocation(id, "uUseSpecularMap");
         return true;
     }
 };
 
 void updateTitle(GLFWwindow* window) {
-    char title[192];
+    char title[224];
     std::snprintf(title, sizeof(title),
-                  "Task 11 - Textures | albedo %s [1] | %s [F] | shadows %s [S] | scene %s | "
-                  "camera %s",
-                  gUseAlbedoMap ? "on" : "off", kFilterNames[gFilter], gShadows ? "on" : "off",
-                  gPaused ? "paused" : "running", gCamera.animated() ? "animated" : "mouse");
+                  "Task 11 - Textures | albedo %s [1] | specular %s [2] | %s [F] | shadows %s [S] "
+                  "| scene %s | camera %s",
+                  gUseAlbedoMap ? "on" : "off", gUseSpecularMap ? "on" : "off",
+                  kFilterNames[gFilter], gShadows ? "on" : "off", gPaused ? "paused" : "running",
+                  gCamera.animated() ? "animated" : "mouse");
     glfwSetWindowTitle(window, title);
 }
 
@@ -784,18 +814,24 @@ int main() {
     // One material per cube face, in the order of makeCube: +x, -x, +y, -y, +z, -z.
     const char* cubeFaceNames[6] = {"bricks", "rock", "steel", "tiles", "wood", "fabric"};
     std::vector<GLuint> textures;
-    const auto albedoOf = [&textures](const std::string& name) {
-        textures.push_back(loadTexture(name + "_albedo.jpg"));
-        return textures.back();
+    const auto keep = [&textures](GLuint texture) {
+        textures.push_back(texture);
+        return texture;
+    };
+    const auto materialOf = [&keep](const std::string& name) {
+        return Material{keep(loadTexture(name + "_albedo.jpg")),
+                        keep(loadTexture(name + "_specular.png"))};
     };
 
     Material cubeFaces[6];
     for (int face = 0; face < 6; ++face) {
-        cubeFaces[face] = {albedoOf(cubeFaceNames[face]), 0.3f};
+        cubeFaces[face] = materialOf(cubeFaceNames[face]);
     }
-    const Material sphereMaterial{albedoOf("earth"), 0.5f};
-    const Material moonMaterial{albedoOf("moon"), 0.05f};
-    const Material floorMaterial{albedoOf("paving"), 0.2f};
+    const Material sphereMaterial = materialOf("earth");
+    const Material floorMaterial = materialOf("paving");
+    // The moon only has a colour image; dust is almost matte everywhere.
+    const Material moonMaterial{keep(loadTexture("moon_albedo.jpg")),
+                                keep(makeFlatTexture(glm::vec3(0.05f)))};
 
     if (std::find(textures.begin(), textures.end(), 0u) != textures.end()) {
         glDeleteTextures(static_cast<GLsizei>(textures.size()), textures.data());
@@ -928,12 +964,14 @@ int main() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, shadowMap.depth);
 
-        // Unit 0 holds the shadow map for the whole pass; unit 1 the albedo of
-        // whatever is being drawn.
+        // Unit 0 holds the shadow map for the whole pass; units 1 and 2 the
+        // maps of whatever is being drawn.
         glUseProgram(scene.id);
         glUniform1i(scene.shadowMap, 0);
         glUniform1i(scene.albedoMap, 1);
+        glUniform1i(scene.specularMap, 2);
         glUniform1i(scene.useAlbedoMap, gUseAlbedoMap ? 1 : 0);
+        glUniform1i(scene.useSpecularMap, gUseSpecularMap ? 1 : 0);
         glUniform1i(scene.shadows, gShadows ? 1 : 0);
         glUniformMatrix4fv(scene.lightSpace, 1, GL_FALSE, glm::value_ptr(lightSpace));
         glUniformMatrix4fv(scene.view, 1, GL_FALSE, glm::value_ptr(view));
@@ -950,7 +988,8 @@ int main() {
             glUniformMatrix3fv(scene.normalMatrix, 1, GL_FALSE, glm::value_ptr(normalMatrix));
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, instance.material->albedo);
-            glUniform1f(scene.specular, instance.material->specular);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, instance.material->specular);
             instance.mesh->draw(instance.first, instance.count);
         }
 
