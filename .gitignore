@@ -14,3 +14,5 @@ vcpkg_installed/
 *.exe
 *.o
 *.obj
+# ...except the Wavefront OBJ files that are scene data
+!task-*/scenes/**/*.obj
