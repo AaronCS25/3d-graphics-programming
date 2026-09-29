@@ -2,13 +2,14 @@
 //
 // The animated scene of tasks 05/07/08 (a spinning cube, a sphere orbiting it
 // and a moon orbiting the sphere) standing above a floor, lit by the animated
-// sun of task 10 with its shadow map. Every vertex carries texture coordinates
-// and a tangent, the attributes texturing needs.
+// sun of task 10 with its shadow map. Every surface takes its colour from an
+// image: a different material on each face of the cube, the world map on the
+// sphere, the moon on the moon and paving stones on the floor.
 //
 //   1. glfwInit() + window hints (OpenGL 3.3 core) + glfwCreateWindow()
 //   2. glfwMakeContextCurrent() + gladLoadGLLoader() + depth test
 //   3. compile & link shaders, create the shadow map
-//   4. build the meshes and upload them
+//   4. build the meshes, upload them, load the textures
 //   5. render loop: animate -> pass 1 (depth from the sun) -> pass 2 (camera)
 //   6. cleanup + glfwTerminate()
 
@@ -22,10 +23,13 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <stb_image.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 namespace {
@@ -76,6 +80,14 @@ constexpr float kLightFar = kLightDistance + kLightHalfExtent;
 
 camera gCamera;
 
+// Texture filtering, cycled with F to show what each one does to a surface seen
+// at a grazing angle, like the floor far from the camera.
+enum Filter { kNearest, kBilinear, kTrilinear };
+const char* kFilterNames[] = {"nearest", "bilinear", "trilinear"};
+
+bool gUseAlbedoMap = true;
+Filter gFilter = kTrilinear;
+bool gFilterDirty = false;
 bool gShadows = true;
 bool gPaused = false;
 bool gResetRequested = false;
@@ -171,7 +183,8 @@ in vec4 vLightSpacePos;
 
 uniform sampler2D uShadowMap;
 uniform bool uShadows;
-uniform vec3 uColor;
+uniform sampler2D uAlbedoMap;
+uniform bool uUseAlbedoMap;
 uniform float uSpecular;
 
 out vec4 FragColor;
@@ -198,9 +211,14 @@ float shadowFactor(vec4 lightSpacePos, vec3 N, vec3 L) {
 }
 
 void main() {
+    // The rasterizer has interpolated vUV, so each fragment looks up its own
+    // texel. Without the map every surface is a neutral grey, which leaves only
+    // what the lighting contributes.
+    vec3 albedo = uUseAlbedoMap ? texture(uAlbedoMap, vUV).rgb : vec3(0.75);
+
     vec3 N = normalize(vNormal);
     float shadow = uShadows ? shadowFactor(vLightSpacePos, N, uLightDir) : 0.0;
-    FragColor = vec4(illuminate(vWorldPos, N, uColor, uSpecular, shadow), 1.0);
+    FragColor = vec4(illuminate(vWorldPos, N, albedo, uSpecular, shadow), 1.0);
 }
 )";
 
@@ -287,6 +305,15 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
     switch (key) {
     case GLFW_KEY_ESCAPE:
         glfwSetWindowShouldClose(window, true);
+        break;
+    case GLFW_KEY_1:
+        gUseAlbedoMap = !gUseAlbedoMap;
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_F:
+        gFilter = static_cast<Filter>((gFilter + 1) % 3);
+        gFilterDirty = true;
+        gTitleDirty = true;
         break;
     case GLFW_KEY_S:
         gShadows = !gShadows;
@@ -526,9 +553,52 @@ struct GpuMesh {
     }
 };
 
-// What a surface looks like. For now a colour and the strength of the highlight.
+// Minification is what the filter changes: far away, one pixel covers many
+// texels. Nearest picks one of them, bilinear blends the four around the sample
+// point, and trilinear blends two mipmap levels, pre-shrunk copies of the image,
+// so a pixel never skips over texels it should have averaged.
+void applyFilter(GLuint texture, Filter filter) {
+    const GLint minify[] = {GL_NEAREST, GL_LINEAR, GL_LINEAR_MIPMAP_LINEAR};
+    const GLint magnify[] = {GL_NEAREST, GL_LINEAR, GL_LINEAR};
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minify[filter]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magnify[filter]);
+}
+
+// Loads an image into a new texture with its whole mipmap chain. Returns 0 if the
+// file cannot be read.
+GLuint loadTexture(const std::string& name) {
+    const std::string path = std::string(TEXTURE_DIR) + name;
+
+    // Images are stored top row first; OpenGL puts v = 0 at the bottom.
+    stbi_set_flip_vertically_on_load(1);
+    int width = 0, height = 0, channels = 0;
+    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 0);
+    if (pixels == nullptr) {
+        std::fprintf(stderr, "could not load '%s': %s\n", path.c_str(), stbi_failure_reason());
+        return 0;
+    }
+    const GLenum format = channels == 1 ? GL_RED : channels == 3 ? GL_RGB : GL_RGBA;
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // rows are tightly packed, not 4-byte aligned
+    glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(format), width, height, 0, format,
+                 GL_UNSIGNED_BYTE, pixels);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    stbi_image_free(pixels);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    applyFilter(texture, gFilter);
+    return texture;
+}
+
+// What a surface looks like: its colour, from an image, and the strength of its
+// highlight.
 struct Material {
-    glm::vec3 color;
+    GLuint albedo;
     float specular;
 };
 
@@ -592,7 +662,8 @@ struct SceneProgram {
     GLint ambientLight = -1;
     GLint lightColor = -1;
     GLint shininess = -1;
-    GLint color = -1;
+    GLint albedoMap = -1;
+    GLint useAlbedoMap = -1;
     GLint specular = -1;
 
     bool create() {
@@ -612,18 +683,20 @@ struct SceneProgram {
         ambientLight = glGetUniformLocation(id, "uAmbientLight");
         lightColor = glGetUniformLocation(id, "uLightColor");
         shininess = glGetUniformLocation(id, "uShininess");
-        color = glGetUniformLocation(id, "uColor");
+        albedoMap = glGetUniformLocation(id, "uAlbedoMap");
+        useAlbedoMap = glGetUniformLocation(id, "uUseAlbedoMap");
         specular = glGetUniformLocation(id, "uSpecular");
         return true;
     }
 };
 
 void updateTitle(GLFWwindow* window) {
-    char title[128];
+    char title[192];
     std::snprintf(title, sizeof(title),
-                  "Task 11 - Textures | shadows %s [S] | scene %s | camera %s",
-                  gShadows ? "on" : "off", gPaused ? "paused" : "running",
-                  gCamera.animated() ? "animated" : "mouse");
+                  "Task 11 - Textures | albedo %s [1] | %s [F] | shadows %s [S] | scene %s | "
+                  "camera %s",
+                  gUseAlbedoMap ? "on" : "off", kFilterNames[gFilter], gShadows ? "on" : "off",
+                  gPaused ? "paused" : "running", gCamera.animated() ? "animated" : "mouse");
     glfwSetWindowTitle(window, title);
 }
 
@@ -708,14 +781,35 @@ int main() {
     GpuMesh ground;
     ground.upload(makeFloor(kFloorSize, 4.0f));
 
-    const Material cubeFaces[6] = {
-        {{0.95f, 0.35f, 0.40f}, 0.3f}, {{0.98f, 0.62f, 0.28f}, 0.3f},
-        {{0.43f, 0.80f, 0.47f}, 0.3f}, {{0.28f, 0.66f, 0.88f}, 0.3f},
-        {{0.62f, 0.52f, 0.93f}, 0.3f}, {{0.95f, 0.83f, 0.36f}, 0.3f},
+    // One material per cube face, in the order of makeCube: +x, -x, +y, -y, +z, -z.
+    const char* cubeFaceNames[6] = {"bricks", "rock", "steel", "tiles", "wood", "fabric"};
+    std::vector<GLuint> textures;
+    const auto albedoOf = [&textures](const std::string& name) {
+        textures.push_back(loadTexture(name + "_albedo.jpg"));
+        return textures.back();
     };
-    const Material sphereMaterial{{0.18f, 0.45f, 0.80f}, 0.5f};
-    const Material moonMaterial{{0.70f, 0.70f, 0.68f}, 0.05f};
-    const Material floorMaterial{{0.78f, 0.78f, 0.74f}, 0.2f};
+
+    Material cubeFaces[6];
+    for (int face = 0; face < 6; ++face) {
+        cubeFaces[face] = {albedoOf(cubeFaceNames[face]), 0.3f};
+    }
+    const Material sphereMaterial{albedoOf("earth"), 0.5f};
+    const Material moonMaterial{albedoOf("moon"), 0.05f};
+    const Material floorMaterial{albedoOf("paving"), 0.2f};
+
+    if (std::find(textures.begin(), textures.end(), 0u) != textures.end()) {
+        glDeleteTextures(static_cast<GLsizei>(textures.size()), textures.data());
+        cube.destroy();
+        sphere.destroy();
+        ground.destroy();
+        shadowMap.destroy();
+        glDeleteProgram(scene.id);
+        glDeleteProgram(depthProgram);
+        glDeleteProgram(markerProgram);
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
 
     const glm::vec3 ambientLight(0.18f); // Ia
     const glm::vec3 lightColor(1.0f);    // Id = Is
@@ -739,6 +833,12 @@ int main() {
         if (!gPaused) {
             sceneTime += deltaTime;
             gCamera.update(deltaTime);
+        }
+        if (gFilterDirty) {
+            gFilterDirty = false;
+            for (const GLuint texture : textures) {
+                applyFilter(texture, gFilter);
+            }
         }
         if (gTitleDirty) {
             gTitleDirty = false;
@@ -828,8 +928,12 @@ int main() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, shadowMap.depth);
 
+        // Unit 0 holds the shadow map for the whole pass; unit 1 the albedo of
+        // whatever is being drawn.
         glUseProgram(scene.id);
         glUniform1i(scene.shadowMap, 0);
+        glUniform1i(scene.albedoMap, 1);
+        glUniform1i(scene.useAlbedoMap, gUseAlbedoMap ? 1 : 0);
         glUniform1i(scene.shadows, gShadows ? 1 : 0);
         glUniformMatrix4fv(scene.lightSpace, 1, GL_FALSE, glm::value_ptr(lightSpace));
         glUniformMatrix4fv(scene.view, 1, GL_FALSE, glm::value_ptr(view));
@@ -844,7 +948,8 @@ int main() {
             const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(instance.model)));
             glUniformMatrix4fv(scene.model, 1, GL_FALSE, glm::value_ptr(instance.model));
             glUniformMatrix3fv(scene.normalMatrix, 1, GL_FALSE, glm::value_ptr(normalMatrix));
-            glUniform3fv(scene.color, 1, glm::value_ptr(instance.material->color));
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, instance.material->albedo);
             glUniform1f(scene.specular, instance.material->specular);
             instance.mesh->draw(instance.first, instance.count);
         }
@@ -864,6 +969,7 @@ int main() {
     }
 
     // 6. Cleanup.
+    glDeleteTextures(static_cast<GLsizei>(textures.size()), textures.data());
     cube.destroy();
     sphere.destroy();
     ground.destroy();
