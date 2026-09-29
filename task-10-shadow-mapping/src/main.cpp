@@ -63,7 +63,8 @@ constexpr float kSunMarkerRadius = 0.12f;
 // kLightDistance away along the light direction, looking at the origin, and is
 // wide and deep enough to hold the whole floor from any direction (the floor's
 // half diagonal is 7.07).
-constexpr int kShadowMapSize = 2048;
+constexpr int kMinShadowMapSize = 256;
+constexpr int kMaxShadowMapSize = 4096;
 constexpr float kLightDistance = 10.0f;
 constexpr float kLightHalfExtent = 7.5f;
 constexpr float kLightNear = kLightDistance - kLightHalfExtent;
@@ -87,6 +88,9 @@ const Orbiter kOrbiters[] = {
 
 camera gCamera(glm::vec3(0.0f, -0.3f, 0.0f), 9.0f, 4.5f, 1.0f);
 
+bool gUseBias = true; // off shows shadow acne
+bool gUsePcf = true;  // off shows the hard, texel-sized edges
+int gShadowMapSize = 2048;
 bool gShowShadowMap = false;
 bool gPaused = false;
 bool gResetRequested = false;
@@ -179,10 +183,13 @@ in vec3 vNormal;
 in vec4 vLightSpacePos;
 
 uniform sampler2D uShadowMap;
+uniform bool uUseBias;
+uniform bool uUsePcf;
 
 out vec4 FragColor;
 
-// 1 if something between the sun and this fragment was recorded in pass 1.
+// 1 if something between the sun and this fragment was recorded in pass 1, 0 if
+// not; with PCF, the fraction of the texels around it that are blocked.
 float shadowFactor(vec4 lightSpacePos, vec3 N, vec3 L) {
     // Perspective divide (w = 1 for an orthographic light), then from NDC
     // [-1, 1] to texture coordinates and depth [0, 1].
@@ -194,15 +201,35 @@ float shadowFactor(vec4 lightSpacePos, vec3 N, vec3 L) {
         return 0.0;
     }
 
-    float closest = texture(uShadowMap, p.xy).r;
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
 
     // Each texel stores one depth for a small patch of surface. Compared with
     // that patch, a lit surface is half in front of and half behind its own
     // stored depth, and shadows itself in stripes: shadow acne. The bias moves
     // the comparison slightly towards the light, more where the surface is
     // tilted away from it and one texel spans a larger depth range.
-    float bias = max(0.005 * (1.0 - dot(N, L)), 0.0005);
-    return p.z - bias > closest ? 1.0 : 0.0;
+    //
+    // The slides' max(0.05 (1 - N.L), 0.005) is written for a light box a few
+    // units deep. Ours is as deep as it is wide, so one texel across is also
+    // one texel of depth, and the same bias is counted here in texels: 1 to 10,
+    // whatever the resolution of the map.
+    float bias = uUseBias ? texel.x * max(10.0 * (1.0 - dot(N, L)), 1.0) : 0.0;
+
+    if (!uUsePcf) {
+        return p.z - bias > texture(uShadowMap, p.xy).r ? 1.0 : 0.0;
+    }
+
+    // Percentage-closer filtering: the same test against the 3x3 texels around
+    // p, averaged. Depths are not blended, the answers are, so an edge fades
+    // over about one texel instead of stepping from lit to dark.
+    float shadow = 0.0;
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            float closest = texture(uShadowMap, p.xy + vec2(x, y) * texel).r;
+            shadow += p.z - bias > closest ? 1.0 : 0.0;
+        }
+    }
+    return shadow / 9.0;
 }
 
 void main() {
@@ -325,6 +352,22 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
         break;
     case GLFW_KEY_M:
         gShowShadowMap = !gShowShadowMap;
+        break;
+    case GLFW_KEY_B:
+        gUseBias = !gUseBias;
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_P:
+        gUsePcf = !gUsePcf;
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_UP:
+        gShadowMapSize = std::min(gShadowMapSize * 2, kMaxShadowMapSize);
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_DOWN:
+        gShadowMapSize = std::max(gShadowMapSize / 2, kMinShadowMapSize);
+        gTitleDirty = true;
         break;
     case GLFW_KEY_R:
         gResetRequested = true;
@@ -469,11 +512,8 @@ struct ShadowMap {
     int size = 0;
 
     bool create(int resolution) {
-        size = resolution;
         glGenTextures(1, &depth);
-        glBindTexture(GL_TEXTURE_2D, depth);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, size, size, 0, GL_DEPTH_COMPONENT,
-                     GL_FLOAT, nullptr);
+        resize(resolution);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         // Outside the map the border answers depth 1, the far plane: nothing
@@ -493,6 +533,15 @@ struct ShadowMap {
         return complete;
     }
 
+    // New storage for the same texture object: the framebuffer attachment and
+    // the sampling parameters stay as they are.
+    void resize(int resolution) {
+        size = resolution;
+        glBindTexture(GL_TEXTURE_2D, depth);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, size, size, 0, GL_DEPTH_COMPONENT,
+                     GL_FLOAT, nullptr);
+    }
+
     void destroy() {
         glDeleteFramebuffers(1, &fbo);
         glDeleteTextures(1, &depth);
@@ -508,6 +557,8 @@ struct SceneProgram {
     GLint normalMatrix = -1;
     GLint lightSpace = -1;
     GLint shadowMap = -1;
+    GLint useBias = -1;
+    GLint usePcf = -1;
     GLint lightDir = -1;
     GLint cameraPos = -1;
     GLint ambientLight = -1;
@@ -528,6 +579,8 @@ struct SceneProgram {
         normalMatrix = glGetUniformLocation(id, "uNormalMatrix");
         lightSpace = glGetUniformLocation(id, "uLightSpace");
         shadowMap = glGetUniformLocation(id, "uShadowMap");
+        useBias = glGetUniformLocation(id, "uUseBias");
+        usePcf = glGetUniformLocation(id, "uUsePcf");
         lightDir = glGetUniformLocation(id, "uLightDir");
         cameraPos = glGetUniformLocation(id, "uCameraPos");
         ambientLight = glGetUniformLocation(id, "uAmbientLight");
@@ -581,9 +634,11 @@ void printStats(const std::string& name, const CHE& mesh) {
 void updateTitle(GLFWwindow* window, const std::string& occluderName) {
     char title[256];
     std::snprintf(title, sizeof(title),
-                  "Task 10 - Shadow Mapping | %s | %dx%d shadow map [M] | scene %s | camera %s",
-                  occluderName.c_str(), kShadowMapSize, kShadowMapSize,
-                  gPaused ? "paused" : "running", gCamera.animated() ? "animated" : "mouse");
+                  "Task 10 - Shadow Mapping | %s | map %dx%d [M] | bias %s [B] | PCF %s [P] | "
+                  "scene %s | camera %s",
+                  occluderName.c_str(), gShadowMapSize, gShadowMapSize, gUseBias ? "on" : "off",
+                  gUsePcf ? "on" : "off", gPaused ? "paused" : "running",
+                  gCamera.animated() ? "animated" : "mouse");
     glfwSetWindowTitle(window, title);
 }
 
@@ -680,7 +735,7 @@ int main(int argc, char** argv) {
     const GLuint markerProgram =
         createShaderProgram({kMarkerVertexSource}, {kMarkerFragmentSource});
     ShadowMap shadowMap;
-    const bool shadowMapReady = shadowMap.create(kShadowMapSize);
+    const bool shadowMapReady = shadowMap.create(gShadowMapSize);
     if (!sceneReady || depthProgram == 0 || overlayProgram == 0 || markerProgram == 0 ||
         !shadowMapReady) {
         if (!shadowMapReady) {
@@ -818,6 +873,9 @@ int main(int argc, char** argv) {
                        kLightNear, kLightFar);
         const glm::mat4 lightSpace = lightProjection * lightView;
 
+        if (shadowMap.size != gShadowMapSize) {
+            shadowMap.resize(gShadowMapSize);
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
         glViewport(0, 0, shadowMap.size, shadowMap.size);
         glClear(GL_DEPTH_BUFFER_BIT);
@@ -843,6 +901,8 @@ int main(int argc, char** argv) {
 
         glUseProgram(scene.id);
         glUniform1i(scene.shadowMap, 0);
+        glUniform1i(scene.useBias, gUseBias ? 1 : 0);
+        glUniform1i(scene.usePcf, gUsePcf ? 1 : 0);
         glUniformMatrix4fv(scene.lightSpace, 1, GL_FALSE, glm::value_ptr(lightSpace));
         glUniformMatrix4fv(scene.view, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(scene.projection, 1, GL_FALSE, glm::value_ptr(projection));
