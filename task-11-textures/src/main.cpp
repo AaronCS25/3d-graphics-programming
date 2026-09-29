@@ -2,9 +2,10 @@
 //
 // The animated scene of tasks 05/07/08 (a spinning cube, a sphere orbiting it
 // and a moon orbiting the sphere) standing above a floor, lit by the animated
-// sun of task 10 with its shadow map. Every surface takes its colour and its
-// shininess from images: a different material on each face of the cube, the
-// world map on the sphere, the moon on the moon and paving stones on the floor.
+// sun of task 10 with its shadow map. Every surface takes its colour, its
+// shininess and its relief from images: a different material on each face of
+// the cube, the world map on the sphere, the moon on the moon and paving stones
+// on the floor.
 //
 //   1. glfwInit() + window hints (OpenGL 3.3 core) + glfwCreateWindow()
 //   2. glfwMakeContextCurrent() + gladLoadGLLoader() + depth test
@@ -87,6 +88,7 @@ const char* kFilterNames[] = {"nearest", "bilinear", "trilinear"};
 
 bool gUseAlbedoMap = true;
 bool gUseSpecularMap = true;
+bool gUseNormalMap = true;
 Filter gFilter = kTrilinear;
 bool gFilterDirty = false;
 bool gShadows = true;
@@ -188,6 +190,8 @@ uniform sampler2D uAlbedoMap;
 uniform bool uUseAlbedoMap;
 uniform sampler2D uSpecularMap;
 uniform bool uUseSpecularMap;
+uniform sampler2D uNormalMap;
+uniform bool uUseNormalMap;
 
 out vec4 FragColor;
 
@@ -222,8 +226,25 @@ void main() {
     // is shiny. Without it every surface gets the same highlight.
     float ks = uUseSpecularMap ? texture(uSpecularMap, vUV).r : 0.3;
 
-    vec3 N = normalize(vNormal);
-    float shadow = uShadows ? shadowFactor(vLightSpacePos, N, uLightDir) : 0.0;
+    // The shadow test belongs to the real surface, so its bias uses the
+    // geometric normal; the normal map only changes how light is reflected.
+    vec3 geometric = normalize(vNormal);
+    float shadow = uShadows ? shadowFactor(vLightSpacePos, geometric, uLightDir) : 0.0;
+
+    // The normal map stores a direction in tangent space, each component mapped
+    // from [-1, 1] to a colour in [0, 1]: x along the tangent (u grows), y along
+    // the bitangent (v grows), z out of the surface, which is why these images
+    // are mostly blue. The TBN matrix, whose columns are those three axes in
+    // world space, brings it to world space.
+    vec3 N = geometric;
+    if (uUseNormalMap) {
+        // Interpolation leaves T slightly off perpendicular to N: Gram-Schmidt.
+        vec3 T = normalize(vTangent - dot(vTangent, geometric) * geometric);
+        vec3 B = cross(geometric, T);
+        vec3 mapped = texture(uNormalMap, vUV).rgb * 2.0 - 1.0;
+        N = normalize(mat3(T, B, geometric) * mapped);
+    }
+
     FragColor = vec4(illuminate(vWorldPos, N, albedo, ks, shadow), 1.0);
 }
 )";
@@ -318,6 +339,10 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
         break;
     case GLFW_KEY_2:
         gUseSpecularMap = !gUseSpecularMap;
+        gTitleDirty = true;
+        break;
+    case GLFW_KEY_3:
+        gUseNormalMap = !gUseNormalMap;
         gTitleDirty = true;
         break;
     case GLFW_KEY_F:
@@ -622,11 +647,12 @@ GLuint makeFlatTexture(const glm::vec3& value) {
     return texture;
 }
 
-// What a surface looks like, one image per term of the lighting equation: its
-// colour (kd = ka) and how shiny it is (ks).
+// What a surface looks like: its colour (kd = ka), how shiny it is (ks) and the
+// relief that bends its normal.
 struct Material {
     GLuint albedo;
     GLuint specular;
+    GLuint normal;
 };
 
 // One draw of the frame: a mesh (or a range of it), where, and with which
@@ -693,6 +719,8 @@ struct SceneProgram {
     GLint useAlbedoMap = -1;
     GLint specularMap = -1;
     GLint useSpecularMap = -1;
+    GLint normalMap = -1;
+    GLint useNormalMap = -1;
 
     bool create() {
         id = createShaderProgram({kSceneVertexSource}, {kIlluminationSource, kSceneFragmentSource});
@@ -715,18 +743,20 @@ struct SceneProgram {
         useAlbedoMap = glGetUniformLocation(id, "uUseAlbedoMap");
         specularMap = glGetUniformLocation(id, "uSpecularMap");
         useSpecularMap = glGetUniformLocation(id, "uUseSpecularMap");
+        normalMap = glGetUniformLocation(id, "uNormalMap");
+        useNormalMap = glGetUniformLocation(id, "uUseNormalMap");
         return true;
     }
 };
 
 void updateTitle(GLFWwindow* window) {
-    char title[224];
+    char title[256];
     std::snprintf(title, sizeof(title),
-                  "Task 11 - Textures | albedo %s [1] | specular %s [2] | %s [F] | shadows %s [S] "
-                  "| scene %s | camera %s",
+                  "Task 11 - Textures | albedo %s [1] | specular %s [2] | normal %s [3] | %s [F] "
+                  "| shadows %s [S] | scene %s | camera %s",
                   gUseAlbedoMap ? "on" : "off", gUseSpecularMap ? "on" : "off",
-                  kFilterNames[gFilter], gShadows ? "on" : "off", gPaused ? "paused" : "running",
-                  gCamera.animated() ? "animated" : "mouse");
+                  gUseNormalMap ? "on" : "off", kFilterNames[gFilter], gShadows ? "on" : "off",
+                  gPaused ? "paused" : "running", gCamera.animated() ? "animated" : "mouse");
     glfwSetWindowTitle(window, title);
 }
 
@@ -820,7 +850,8 @@ int main() {
     };
     const auto materialOf = [&keep](const std::string& name) {
         return Material{keep(loadTexture(name + "_albedo.jpg")),
-                        keep(loadTexture(name + "_specular.png"))};
+                        keep(loadTexture(name + "_specular.png")),
+                        keep(loadTexture(name + "_normal.png"))};
     };
 
     Material cubeFaces[6];
@@ -829,9 +860,11 @@ int main() {
     }
     const Material sphereMaterial = materialOf("earth");
     const Material floorMaterial = materialOf("paving");
-    // The moon only has a colour image; dust is almost matte everywhere.
+    // The moon only has a colour image: its dust is almost matte everywhere, and
+    // (0.5, 0.5, 1) is the tangent-space normal (0, 0, 1), no relief.
     const Material moonMaterial{keep(loadTexture("moon_albedo.jpg")),
-                                keep(makeFlatTexture(glm::vec3(0.05f)))};
+                                keep(makeFlatTexture(glm::vec3(0.05f))),
+                                keep(makeFlatTexture(glm::vec3(0.5f, 0.5f, 1.0f)))};
 
     if (std::find(textures.begin(), textures.end(), 0u) != textures.end()) {
         glDeleteTextures(static_cast<GLsizei>(textures.size()), textures.data());
@@ -964,14 +997,16 @@ int main() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, shadowMap.depth);
 
-        // Unit 0 holds the shadow map for the whole pass; units 1 and 2 the
+        // Unit 0 holds the shadow map for the whole pass; units 1 to 3 the
         // maps of whatever is being drawn.
         glUseProgram(scene.id);
         glUniform1i(scene.shadowMap, 0);
         glUniform1i(scene.albedoMap, 1);
         glUniform1i(scene.specularMap, 2);
+        glUniform1i(scene.normalMap, 3);
         glUniform1i(scene.useAlbedoMap, gUseAlbedoMap ? 1 : 0);
         glUniform1i(scene.useSpecularMap, gUseSpecularMap ? 1 : 0);
+        glUniform1i(scene.useNormalMap, gUseNormalMap ? 1 : 0);
         glUniform1i(scene.shadows, gShadows ? 1 : 0);
         glUniformMatrix4fv(scene.lightSpace, 1, GL_FALSE, glm::value_ptr(lightSpace));
         glUniformMatrix4fv(scene.view, 1, GL_FALSE, glm::value_ptr(view));
@@ -990,6 +1025,8 @@ int main() {
             glBindTexture(GL_TEXTURE_2D, instance.material->albedo);
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, instance.material->specular);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, instance.material->normal);
             instance.mesh->draw(instance.first, instance.count);
         }
 
