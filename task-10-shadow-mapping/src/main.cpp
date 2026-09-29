@@ -52,12 +52,22 @@ constexpr float kOccluderSpin = 0.35f; // rad/s
 
 // The sun circles the scene while its elevation rises and falls, so shadows
 // both turn around the objects and stretch and shrink.
-constexpr float kSunAzimuthSpeed = 0.30f;  // rad/s
-constexpr float kSunElevation = 50.0f;     // degrees, mean
+constexpr float kSunAzimuthSpeed = 0.30f;   // rad/s
+constexpr float kSunElevation = 50.0f;      // degrees, mean
 constexpr float kSunElevationSwing = 15.0f; // degrees
 constexpr float kSunElevationSpeed = 0.45f; // rad/s
 constexpr float kSunMarkerDistance = 3.2f;
 constexpr float kSunMarkerRadius = 0.12f;
+
+// The sun's rays are parallel, so its "camera" is an orthographic box. It sits
+// kLightDistance away along the light direction, looking at the origin, and is
+// wide and deep enough to hold the whole floor from any direction (the floor's
+// half diagonal is 7.07).
+constexpr int kShadowMapSize = 2048;
+constexpr float kLightDistance = 10.0f;
+constexpr float kLightHalfExtent = 7.5f;
+constexpr float kLightNear = kLightDistance - kLightHalfExtent;
+constexpr float kLightFar = kLightDistance + kLightHalfExtent;
 
 // Two spheres orbit the occluder: one low, passing through its shadow, and one
 // high, casting its own shadow onto the occluder and the floor.
@@ -77,12 +87,31 @@ const Orbiter kOrbiters[] = {
 
 camera gCamera(glm::vec3(0.0f, -0.3f, 0.0f), 9.0f, 4.5f, 1.0f);
 
+bool gShowShadowMap = false;
 bool gPaused = false;
 bool gResetRequested = false;
 bool gTitleDirty = true;
 std::string gDroppedPath; // set by the drop callback, consumed by the render loop
 
 const char* kVersionSource = "#version 330 core\n";
+
+// Pass 1: the scene seen from the light. Only gl_Position matters: the depth
+// buffer, which is the shadow map, is filled by the rasterizer on its own.
+const char* kDepthVertexSource = R"(
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 uLightSpace;
+uniform mat4 uModel;
+
+void main() {
+    gl_Position = uLightSpace * uModel * vec4(aPos, 1.0);
+}
+)";
+
+const char* kDepthFragmentSource = R"(
+void main() {
+}
+)";
 
 // Task 09's reflection model, Blinn-Phong variant, for a directional light: L
 // is the same for every fragment instead of pointing at a position.
@@ -96,7 +125,9 @@ uniform vec3 uKd;
 uniform vec3 uKs;
 uniform float uShininess;
 
-vec3 illuminate(vec3 position, vec3 normal) {
+// shadow = 1 blocks the light that comes straight from the sun: diffuse and
+// specular. The ambient term stands for light arriving from everywhere else.
+vec3 illuminate(vec3 position, vec3 normal, float shadow) {
     vec3 N = normalize(normal);
     vec3 L = uLightDir;
     vec3 V = normalize(uCameraPos - position);
@@ -113,10 +144,12 @@ vec3 illuminate(vec3 position, vec3 normal) {
     }
     vec3 specular = uKs * uLightColor * highlight;
 
-    return ambient + diffuse + specular;
+    return ambient + (1.0 - shadow) * (diffuse + specular);
 }
 )";
 
+// Pass 2: the scene seen from the camera. Each vertex is also transformed with
+// the light's matrices, so the fragment knows where it falls in the shadow map.
 const char* kSceneVertexSource = R"(
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
@@ -125,14 +158,17 @@ uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
 uniform mat3 uNormalMatrix;
+uniform mat4 uLightSpace;
 
 out vec3 vWorldPos;
 out vec3 vNormal;
+out vec4 vLightSpacePos;
 
 void main() {
     vec4 world = uModel * vec4(aPos, 1.0);
     vWorldPos = world.xyz;
     vNormal = uNormalMatrix * aNormal;
+    vLightSpacePos = uLightSpace * world;
     gl_Position = uProjection * uView * world;
 }
 )";
@@ -140,11 +176,64 @@ void main() {
 const char* kSceneFragmentSource = R"(
 in vec3 vWorldPos;
 in vec3 vNormal;
+in vec4 vLightSpacePos;
+
+uniform sampler2D uShadowMap;
+
+out vec4 FragColor;
+
+// 1 if something between the sun and this fragment was recorded in pass 1.
+float shadowFactor(vec4 lightSpacePos, vec3 N, vec3 L) {
+    // Perspective divide (w = 1 for an orthographic light), then from NDC
+    // [-1, 1] to texture coordinates and depth [0, 1].
+    vec3 p = lightSpacePos.xyz / lightSpacePos.w;
+    p = p * 0.5 + 0.5;
+
+    // Beyond the light's far plane nothing was recorded, so nothing blocks it.
+    if (p.z > 1.0) {
+        return 0.0;
+    }
+
+    float closest = texture(uShadowMap, p.xy).r;
+
+    // Each texel stores one depth for a small patch of surface. Compared with
+    // that patch, a lit surface is half in front of and half behind its own
+    // stored depth, and shadows itself in stripes: shadow acne. The bias moves
+    // the comparison slightly towards the light, more where the surface is
+    // tilted away from it and one texel spans a larger depth range.
+    float bias = max(0.005 * (1.0 - dot(N, L)), 0.0005);
+    return p.z - bias > closest ? 1.0 : 0.0;
+}
+
+void main() {
+    float shadow = shadowFactor(vLightSpacePos, normalize(vNormal), uLightDir);
+    FragColor = vec4(illuminate(vWorldPos, vNormal, shadow), 1.0);
+}
+)";
+
+// Debug view of pass 1: the shadow map drawn as a grey image in a corner. The
+// quad is generated from gl_VertexID, so it needs no vertex buffer.
+const char* kOverlayVertexSource = R"(
+out vec2 vUV;
+
+void main() {
+    vec2 corners[4] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+    vUV = corners[gl_VertexID];
+    gl_Position = vec4(2.0 * vUV - 1.0, 0.0, 1.0);
+}
+)";
+
+// The orthographic depth is linear, so it can be shown as it is: dark = near
+// the sun, white = far or nothing drawn.
+const char* kOverlayFragmentSource = R"(
+in vec2 vUV;
+
+uniform sampler2D uDepthMap;
 
 out vec4 FragColor;
 
 void main() {
-    FragColor = vec4(illuminate(vWorldPos, vNormal), 1.0);
+    FragColor = vec4(vec3(texture(uDepthMap, vUV).r), 1.0);
 }
 )";
 
@@ -233,6 +322,9 @@ void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int 
     case GLFW_KEY_C:
         gCamera.set_animated(!gCamera.animated());
         gTitleDirty = true;
+        break;
+    case GLFW_KEY_M:
+        gShowShadowMap = !gShowShadowMap;
         break;
     case GLFW_KEY_R:
         gResetRequested = true;
@@ -369,6 +461,44 @@ struct Instance {
     glm::vec3 color;
 };
 
+// The target of pass 1: a framebuffer whose only attachment is a depth texture.
+// Pass 2 then reads that texture as the shadow map.
+struct ShadowMap {
+    GLuint fbo = 0;
+    GLuint depth = 0;
+    int size = 0;
+
+    bool create(int resolution) {
+        size = resolution;
+        glGenTextures(1, &depth);
+        glBindTexture(GL_TEXTURE_2D, depth);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, size, size, 0, GL_DEPTH_COMPONENT,
+                     GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        // Outside the map the border answers depth 1, the far plane: nothing
+        // recorded there can be in front of the fragment, so it stays lit.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        const float border[] = {1.0f, 1.0f, 1.0f, 1.0f};
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depth, 0);
+        glDrawBuffer(GL_NONE); // no colour attachment: nothing to write or read
+        glReadBuffer(GL_NONE);
+        const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return complete;
+    }
+
+    void destroy() {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &depth);
+    }
+};
+
 // The scene program and its uniform locations.
 struct SceneProgram {
     GLuint id = 0;
@@ -376,6 +506,8 @@ struct SceneProgram {
     GLint view = -1;
     GLint projection = -1;
     GLint normalMatrix = -1;
+    GLint lightSpace = -1;
+    GLint shadowMap = -1;
     GLint lightDir = -1;
     GLint cameraPos = -1;
     GLint ambientLight = -1;
@@ -394,6 +526,8 @@ struct SceneProgram {
         view = glGetUniformLocation(id, "uView");
         projection = glGetUniformLocation(id, "uProjection");
         normalMatrix = glGetUniformLocation(id, "uNormalMatrix");
+        lightSpace = glGetUniformLocation(id, "uLightSpace");
+        shadowMap = glGetUniformLocation(id, "uShadowMap");
         lightDir = glGetUniformLocation(id, "uLightDir");
         cameraPos = glGetUniformLocation(id, "uCameraPos");
         ambientLight = glGetUniformLocation(id, "uAmbientLight");
@@ -446,9 +580,10 @@ void printStats(const std::string& name, const CHE& mesh) {
 
 void updateTitle(GLFWwindow* window, const std::string& occluderName) {
     char title[256];
-    std::snprintf(title, sizeof(title), "Task 10 - Shadow Mapping | %s | scene %s | camera %s",
-                  occluderName.c_str(), gPaused ? "paused" : "running",
-                  gCamera.animated() ? "animated" : "mouse");
+    std::snprintf(title, sizeof(title),
+                  "Task 10 - Shadow Mapping | %s | %dx%d shadow map [M] | scene %s | camera %s",
+                  occluderName.c_str(), kShadowMapSize, kShadowMapSize,
+                  gPaused ? "paused" : "running", gCamera.animated() ? "animated" : "mouse");
     glfwSetWindowTitle(window, title);
 }
 
@@ -536,18 +671,33 @@ int main(int argc, char** argv) {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
 
-    // 3. Shaders.
+    // 3. Shaders and the shadow map.
     SceneProgram scene;
     const bool sceneReady = scene.create();
+    const GLuint depthProgram = createShaderProgram({kDepthVertexSource}, {kDepthFragmentSource});
+    const GLuint overlayProgram =
+        createShaderProgram({kOverlayVertexSource}, {kOverlayFragmentSource});
     const GLuint markerProgram =
         createShaderProgram({kMarkerVertexSource}, {kMarkerFragmentSource});
-    if (!sceneReady || markerProgram == 0) {
+    ShadowMap shadowMap;
+    const bool shadowMapReady = shadowMap.create(kShadowMapSize);
+    if (!sceneReady || depthProgram == 0 || overlayProgram == 0 || markerProgram == 0 ||
+        !shadowMapReady) {
+        if (!shadowMapReady) {
+            std::fprintf(stderr, "Shadow map framebuffer is incomplete\n");
+        }
+        shadowMap.destroy();
         glDeleteProgram(scene.id);
+        glDeleteProgram(depthProgram);
+        glDeleteProgram(overlayProgram);
         glDeleteProgram(markerProgram);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
+    const GLint depthLightSpaceLocation = glGetUniformLocation(depthProgram, "uLightSpace");
+    const GLint depthModelLocation = glGetUniformLocation(depthProgram, "uModel");
+    const GLint overlayDepthMapLocation = glGetUniformLocation(overlayProgram, "uDepthMap");
     const GLint markerModelLocation = glGetUniformLocation(markerProgram, "uModel");
     const GLint markerViewLocation = glGetUniformLocation(markerProgram, "uView");
     const GLint markerProjectionLocation = glGetUniformLocation(markerProgram, "uProjection");
@@ -569,6 +719,10 @@ int main(int argc, char** argv) {
     GpuMesh floorGpu;
     floorGpu.create();
     floorGpu.upload(make_plane(kFloorSize));
+
+    // The overlay quad has no attributes, but a core profile still needs a VAO bound.
+    GLuint emptyVao = 0;
+    glGenVertexArrays(1, &emptyVao);
 
     // ka = kd per object; ks is grey, so highlights take the colour of the light.
     const glm::vec3 ambientLight(0.18f); // Ia
@@ -654,7 +808,28 @@ int main(int argc, char** argv) {
                                  orbiter.color});
         }
 
-        // --- Render from the camera. ------------------------------------------
+        // --- Pass 1: depth from the light into the shadow map. ----------------
+        // lightDir is never vertical (elevation <= 65 degrees), so +y is a valid
+        // up vector for the light's view.
+        const glm::mat4 lightView = glm::lookAt(kLightDistance * lightDir, glm::vec3(0.0f),
+                                                glm::vec3(0.0f, 1.0f, 0.0f));
+        const glm::mat4 lightProjection =
+            glm::ortho(-kLightHalfExtent, kLightHalfExtent, -kLightHalfExtent, kLightHalfExtent,
+                       kLightNear, kLightFar);
+        const glm::mat4 lightSpace = lightProjection * lightView;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, shadowMap.fbo);
+        glViewport(0, 0, shadowMap.size, shadowMap.size);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glUseProgram(depthProgram);
+        glUniformMatrix4fv(depthLightSpaceLocation, 1, GL_FALSE, glm::value_ptr(lightSpace));
+        for (const Instance& instance : instances) {
+            glUniformMatrix4fv(depthModelLocation, 1, GL_FALSE, glm::value_ptr(instance.model));
+            instance.mesh->draw();
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // --- Pass 2: the scene from the camera, tested against the map. -------
         glViewport(0, 0, width, height);
         glClearColor(0.07f, 0.08f, 0.11f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -663,7 +838,12 @@ int main(int argc, char** argv) {
         const glm::mat4 projection = gCamera.projection(width, height);
         const glm::vec3 cameraPos = gCamera.position();
 
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, shadowMap.depth);
+
         glUseProgram(scene.id);
+        glUniform1i(scene.shadowMap, 0);
+        glUniformMatrix4fv(scene.lightSpace, 1, GL_FALSE, glm::value_ptr(lightSpace));
         glUniformMatrix4fv(scene.view, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(scene.projection, 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(scene.lightDir, 1, glm::value_ptr(lightDir));
@@ -693,6 +873,18 @@ int main(int argc, char** argv) {
         glUniform3fv(markerColorLocation, 1, glm::value_ptr(lightColor));
         sphereGpu.draw();
 
+        // The shadow map itself, in the bottom-left corner, over everything.
+        if (gShowShadowMap) {
+            const int side = std::min(width, height) / 3;
+            glViewport(0, 0, side, side);
+            glDisable(GL_DEPTH_TEST);
+            glUseProgram(overlayProgram);
+            glUniform1i(overlayDepthMapLocation, 0);
+            glBindVertexArray(emptyVao);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glEnable(GL_DEPTH_TEST);
+        }
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
@@ -701,7 +893,11 @@ int main(int argc, char** argv) {
     occluderGpu.destroy();
     sphereGpu.destroy();
     floorGpu.destroy();
+    glDeleteVertexArrays(1, &emptyVao);
+    shadowMap.destroy();
     glDeleteProgram(scene.id);
+    glDeleteProgram(depthProgram);
+    glDeleteProgram(overlayProgram);
     glDeleteProgram(markerProgram);
     glfwDestroyWindow(window);
     glfwTerminate();
