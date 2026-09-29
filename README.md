@@ -16,6 +16,7 @@ shared build system.
 | [08](task-08-arcball-camera/) | Quaternion arcball — shared camera, mouse orbit, scroll zoom, animated/manual modes | ✅ |
 | [09](task-09-illumination/) | Illumination — Phong / Blinn-Phong with Gouraud / Phong shading, keyboard switching | ✅ |
 | [10](task-10-shadow-mapping/) | Shadow mapping — two passes, animated sun and scene, bias against acne, PCF | ✅ |
+| [11](task-11-textures/) | Textures — albedo, specular and normal maps, mipmaps, switchable shadows | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
