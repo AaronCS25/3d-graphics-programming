@@ -5,7 +5,7 @@ view/projection matrices, quaternion orientation, arcball drag, zoom, reset and
 animated/manual switching. It does not depend on GLFW or OpenGL.
 
 Every task already links `gfx_common`, which exposes `gfx_camera`, so all of them
-can include it without changing their CMake files. Tasks 07, 08 and 09 use it now;
+can include it without changing their CMake files. Tasks 07 to 10 use it now;
 the earlier exercises keep their original controls.
 
 ```cpp
