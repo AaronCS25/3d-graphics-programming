@@ -24,6 +24,12 @@ GLuint upload(const unsigned char* pixels, int width, int height, int channels) 
     glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(format), width, height, 0, format,
                  GL_UNSIGNED_BYTE, pixels);
     glGenerateMipmap(GL_TEXTURE_2D);
+    if (channels == 1) {
+        // A grey image read as rgb would give (v, 0, 0): red. Repeat the
+        // channel so a specular map reads (v, v, v), as it looks.
+        const GLint grey[] = {GL_RED, GL_RED, GL_RED, GL_ONE};
+        glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, grey);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
