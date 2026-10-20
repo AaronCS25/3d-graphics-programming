@@ -8,6 +8,13 @@
     "glm",
     "happly",
     "stb",
-    "tinyobjloader"
+    "tinyobjloader",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "opengl3-binding"
+      ]
+    }
   ]
 }

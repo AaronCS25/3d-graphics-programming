@@ -37,3 +37,6 @@ add_subdirectory(task-09-illumination)
 add_subdirectory(task-10-shadow-mapping)
 add_subdirectory(task-11-textures)
 add_subdirectory(task-12-loading-scenes)
+
+# Projects
+add_subdirectory(project-01-scene-viewer)

@@ -16,3 +16,4 @@ vcpkg_installed/
 *.obj
 # ...except the Wavefront OBJ files that are scene data
 !task-*/scenes/**/*.obj
+!project-*/assets/**/*.obj
