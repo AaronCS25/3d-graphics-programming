@@ -18,6 +18,7 @@ shared build system.
 | [10](task-10-shadow-mapping/) | Shadow mapping — two passes, animated sun and scene, bias against acne, PCF | ✅ |
 | [11](task-11-textures/) | Textures — albedo, specular and normal maps, mipmaps, switchable shadows | ✅ |
 | [12](task-12-loading-scenes/) | Loading scenes — OBJ + MTL with tinyobjloader, materials and maps, two scenes | ✅ |
+| [13](task-13-depth-map/) | Depth map — primary rays, Möller-Trumbore, nearest hit as grey, no BVH | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
