@@ -48,6 +48,8 @@ if(CMAKE_CUDA_COMPILER)
 else()
     message(STATUS "task14 skipped: no CUDA compiler (nvcc) found")
 endif()
+# Task 15 builds everywhere: CPU only without nvcc, CPU + GPU with it.
+add_subdirectory(task-15-path-tracer)
 
 # Projects
 add_subdirectory(project-01-scene-viewer)
