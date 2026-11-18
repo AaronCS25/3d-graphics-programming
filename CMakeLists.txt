@@ -39,5 +39,15 @@ add_subdirectory(task-11-textures)
 add_subdirectory(task-12-loading-scenes)
 add_subdirectory(task-13-depth-map)
 
+# Task 14 is CUDA: built only where nvcc exists (an NVIDIA machine). On macOS
+# it is skipped; see task-14-depth-map-cuda/README.md to build it on its own.
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    add_subdirectory(task-14-depth-map-cuda)
+else()
+    message(STATUS "task14 skipped: no CUDA compiler (nvcc) found")
+endif()
+
 # Projects
 add_subdirectory(project-01-scene-viewer)
