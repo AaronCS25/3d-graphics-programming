@@ -19,6 +19,7 @@ shared build system.
 | [11](task-11-textures/) | Textures — albedo, specular and normal maps, mipmaps, switchable shadows | ✅ |
 | [12](task-12-loading-scenes/) | Loading scenes — OBJ + MTL with tinyobjloader, materials and maps, two scenes | ✅ |
 | [13](task-13-depth-map/) | Depth map — primary rays, Möller-Trumbore, nearest hit as grey, no BVH | ✅ |
+| [14](task-14-depth-map-cuda/) | Depth map in CUDA — one GPU thread per pixel, warp reduction, flat scene arrays | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
