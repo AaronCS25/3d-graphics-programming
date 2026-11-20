@@ -21,6 +21,7 @@ shared build system.
 | [13](task-13-depth-map/) | Depth map — primary rays, Möller-Trumbore, nearest hit as grey, no BVH | ✅ |
 | [14](task-14-depth-map-cuda/) | Depth map in CUDA — one GPU thread per pixel, warp reduction, flat scene arrays | ✅ |
 | [15](task-15-path-tracer/) | Path tracer — diffuse, shadow rays, cosine-weighted bounces, one source for CPU and CUDA | ✅ |
+| [17](task-17-advanced-samplers/) | Samplers — Halton, scrambled Halton, Sobol vs std::random and RANDU, discrepancy, point-cloud viewer | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
