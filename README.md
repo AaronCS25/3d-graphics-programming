@@ -22,6 +22,7 @@ shared build system.
 | [14](task-14-depth-map-cuda/) | Depth map in CUDA — one GPU thread per pixel, warp reduction, flat scene arrays | ✅ |
 | [15](task-15-path-tracer/) | Path tracer — diffuse, shadow rays, cosine-weighted bounces, one source for CPU and CUDA | ✅ |
 | [17](task-17-advanced-samplers/) | Samplers — Halton, scrambled Halton, Sobol vs std::random and RANDU, discrepancy, point-cloud viewer | ✅ |
+| [18](task-18-reconstruction-filters/) | Reconstruction filters — Box, Triangle, Gaussian, Mitchell-Netravali on the same path-traced samples | ✅ |
 
 Legend: ✅ done · 🚧 in progress · ⬜ not started
 
