@@ -50,6 +50,7 @@ else()
 endif()
 # Task 15 builds everywhere: CPU only without nvcc, CPU + GPU with it.
 add_subdirectory(task-15-path-tracer)
+add_subdirectory(task-17-advanced-samplers)
 
 # Projects
 add_subdirectory(project-01-scene-viewer)
