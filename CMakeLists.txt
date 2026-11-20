@@ -51,6 +51,7 @@ endif()
 # Task 15 builds everywhere: CPU only without nvcc, CPU + GPU with it.
 add_subdirectory(task-15-path-tracer)
 add_subdirectory(task-17-advanced-samplers)
+add_subdirectory(task-18-reconstruction-filters)
 
 # Projects
 add_subdirectory(project-01-scene-viewer)
