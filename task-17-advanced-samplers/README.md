@@ -13,6 +13,8 @@
 
 ## Result
 
+![overview](docs/overview.png)
+
 Seven generators, each drawn in the viewer: 4096 points in 3D (left) and the
 first 1024 seen from the front, an orthographic projection on the x-y plane
 (right). Colour is the index of the point, from dark blue (first) to yellow
